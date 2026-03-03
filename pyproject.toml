@@ -1,0 +1,92 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "aegis-protocol-sdk"
+version = "0.1.0"
+description = "Tamperproof execution ledger for AI agents. Log every tool call, decision, and error to a cryptographically verifiable audit trail."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+authors = [{ name = "Aegis Protocol" }]
+keywords = [
+    "ai-agents",
+    "audit-trail",
+    "compliance",
+    "langchain",
+    "observability",
+    "tamperproof",
+    "icp",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: System :: Logging",
+    "Topic :: Security",
+]
+
+dependencies = [
+    "cryptography>=42.0",
+]
+
+[project.optional-dependencies]
+icp = ["ic-py>=1.0"]
+langchain = ["langchain-core>=0.1"]
+crewai = ["crewai>=0.28"]
+all = ["ic-py>=1.0", "langchain-core>=0.1", "crewai>=0.28"]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+    "ruff>=0.4",
+    "mypy>=1.10",
+]
+
+[project.scripts]
+aegis = "aegis.cli:main"
+
+[project.urls]
+Homepage = "https://aegisprotocol.dev"
+Documentation = "https://docs.aegisprotocol.dev"
+Repository = "https://github.com/aegis-protocol/aegis-sdk-python"
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP", "B", "SIM", "TCH"]
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["N999"]
+"tests/__init__.py" = ["N999"]
+"tests/test_*.py" = ["N806"]
+
+[tool.hatch.build]
+exclude = [
+  "tests/",
+  "*.md",
+  "*.txt",
+  "*.pptx",
+  ".gitignore",
+  "example_*.py",
+  "setup.py",
+  "pyproject.toml",
+  "mnt/",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["."]
+sources = {"." = "aegis"}
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
