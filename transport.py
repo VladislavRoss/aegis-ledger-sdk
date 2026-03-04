@@ -78,8 +78,9 @@ def _build_add_ledger_entry_args(
     chain_hash: str,
     previous_chain_hash: str,
     payload_hex: str = "",
+    key_id: str = "",
 ) -> list[dict[str, Any]]:
-    """Baut die 23 Candid-Positionalargumente für addLedgerEntry."""
+    """Baut die 24 Candid-Positionalargumente für addLedgerEntry."""
     try:
         from ic.candid import Types  # type: ignore[import-untyped]
     except ImportError as e:
@@ -121,6 +122,7 @@ def _build_add_ledger_entry_args(
         {"type": Types.Text,      "value": chain_hash},
         {"type": Types.Text,      "value": previous_chain_hash},
         {"type": Types.Text,      "value": payload_hex},
+        {"type": Types.Text,      "value": key_id},
     ]
 
 

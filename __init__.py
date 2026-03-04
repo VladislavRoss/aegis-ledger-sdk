@@ -1,11 +1,11 @@
 """
-Aegis Protocol SDK — Tamperproof execution ledger for AI agents.
+Aegis Ledger SDK — Tamperproof execution ledger for AI agents.
 
 Quickstart:
     from aegis import AegisClient
 
     client = AegisClient(
-        canister_id="bkyz2-fmaaa-aaaaa-qaaaq-cai",
+        canister_id="toqqq-lqaaa-aaaae-afc2a-cai",
         api_key_id="ak_3f8a9b2c1d4e5f60",
         private_key_path="./agent_key.pem",
         agent_id="agent_billing_v2",
@@ -17,7 +17,7 @@ Quickstart:
 
     # Every call to search_web is now tamperproof-logged.
 
-Full documentation: https://docs.aegisprotocol.dev
+Full documentation: https://www.aegis-ledger.com/docs
 """
 
 from aegis.client import AegisClient
@@ -32,7 +32,7 @@ from aegis.types import (
     VerificationResult,
 )
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 __all__ = [
     "AegisClient",

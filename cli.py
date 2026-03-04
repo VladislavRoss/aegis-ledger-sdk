@@ -51,7 +51,7 @@ Commands:
 
 Examples:
   aegis keygen ./keys/my_agent.pem
-  aegis verify bkyz2-fmaaa-aaaaa-qaaaq-cai act_a7f3b2c19e4d
+  aegis verify toqqq-lqaaa-aaaae-afc2a-cai act_a7f3b2c19e4d
         """.strip()
     )
 

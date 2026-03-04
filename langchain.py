@@ -10,7 +10,7 @@ Usage:
     from aegis.integrations.langchain import AegisCallbackHandler
 
     client = AegisClient(
-        canister_id="bkyz2-fmaaa-aaaaa-qaaaq-cai",
+        canister_id="toqqq-lqaaa-aaaae-afc2a-cai",
         api_key_id="ak_3f8a...",
         private_key_path="./agent_key.pem",
         agent_id="agent_research_v1",
@@ -45,7 +45,7 @@ logger = logging.getLogger("aegis.langchain")
 class AegisCallbackHandler:
     """
     LangChain-compatible callback handler that logs all agent activity
-    to the Aegis Protocol ledger.
+    to the Aegis Ledger.
 
     Compatible with LangChain v0.1+ and v0.2+. Uses the BaseCallbackHandler
     protocol without importing it, so the handler works even if LangChain

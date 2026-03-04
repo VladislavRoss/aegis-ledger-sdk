@@ -56,13 +56,14 @@ _FULL_ARGS = dict(
     payload_signature="sig",
     chain_hash="chain",
     previous_chain_hash="prev",
+    key_id="ak_test",
 )
 
 
 def test_build_args_length():
-    """Muss genau 23 Argumente zurückgeben (inkl. payloadHex)."""
+    """Muss genau 24 Argumente zurückgeben (inkl. payloadHex + keyId)."""
     args = _build_add_ledger_entry_args(**_FULL_ARGS)
-    assert len(args) == 23
+    assert len(args) == 24
 
 
 def test_build_args_action_type_variant():
@@ -83,3 +84,9 @@ def test_build_args_sequence_number_nat():
     """sequenceNumber (Position 4) muss Nat sein."""
     args = _build_add_ledger_entry_args(**_FULL_ARGS)
     assert args[4]["value"] == 1
+
+
+def test_build_args_key_id_at_position_23():
+    """keyId (Position 23) muss als letztes Argument stehen."""
+    args = _build_add_ledger_entry_args(**_FULL_ARGS)
+    assert args[23]["value"] == "ak_test"

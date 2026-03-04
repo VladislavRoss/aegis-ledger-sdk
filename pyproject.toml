@@ -3,13 +3,13 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "aegis-sdk"
-version = "0.1.0"
+name = "aegis-ledger-sdk"
+version = "0.2.0"
 description = "Tamperproof execution ledger for AI agents. Log every tool call, decision, and error to a cryptographically verifiable audit trail."
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
-authors = [{ name = "Aegis Protocol" }]
+authors = [{ name = "Aegis Ledger" }]
 keywords = [
     "ai-agents",
     "audit-trail",

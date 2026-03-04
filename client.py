@@ -1,11 +1,11 @@
 """
-aegis.client — The primary interface for the Aegis Protocol SDK.
+aegis.client — The primary interface for the Aegis Ledger SDK.
 
 Usage:
     from aegis import AegisClient
 
     client = AegisClient(
-        canister_id="bkyz2-fmaaa-aaaaa-qaaaq-cai",
+        canister_id="toqqq-lqaaa-aaaae-afc2a-cai",
         api_key_id="ak_3f8a9b2c1d4e5f60",
         private_key_path="./agent_key.pem",
         agent_id="agent_billing_v2",
@@ -33,6 +33,7 @@ import functools
 import inspect
 import logging
 import sys
+import threading
 import time
 import uuid
 from collections.abc import Callable, Generator
@@ -60,14 +61,14 @@ from aegis.types import (
 
 logger = logging.getLogger("aegis")
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 F = TypeVar("F", bound=Callable[..., Any])
 
 
 class AegisClient:
     """
-    Client for logging AI agent actions to the Aegis Protocol ledger.
+    Client for logging AI agent actions to the Aegis Ledger.
 
     Thread-safe. One client instance per agent process. The client
     maintains a monotonic sequence counter per session and handles
@@ -118,6 +119,7 @@ class AegisClient:
         self._org_id = org_id
         self._session_id = session_id or f"sess_{uuid.uuid4().hex[:16]}"
         self._sequence: int = 0
+        self._lock = threading.Lock()
         self._fail_open = fail_open
         self._default_metadata = metadata or {}
 
@@ -387,11 +389,12 @@ class AegisClient:
 
         Returns the new session_id.
         """
-        self._session_id = session_id or f"sess_{uuid.uuid4().hex[:16]}"
-        self._sequence = 0
-        self._action_stack.clear()
-        # Neue Session → kein Chain-State von vorheriger Session übernehmen
-        self._chain_heads.pop(self._session_id, None)
+        with self._lock:
+            self._session_id = session_id or f"sess_{uuid.uuid4().hex[:16]}"
+            self._sequence = 0
+            self._action_stack.clear()
+            # Neue Session → kein Chain-State von vorheriger Session übernehmen
+            self._chain_heads.pop(self._session_id, None)
         logger.info("New session started: %s", self._session_id)
         return self._session_id
 
@@ -445,110 +448,114 @@ class AegisClient:
         # Determine parent from the action stack
         parent_id = self._action_stack[-1] if self._action_stack else ""
 
-        # Build the entry
-        entry = LogEntry(
-            agent_id=self._agent_id,
-            session_id=self._session_id,
-            sequence_number=self._sequence,
-            action=ActionPayload(
-                type=action_type,
-                tool=tool,
-                input_hash=sha256_json(input_data),
-                output_hash=sha256_json(output_data),
-                input_preview=truncate_preview(input_data),
-                output_preview=truncate_preview(output_data),
-                duration_ms=duration_ms,
-                status=status,
-            ),
-            context=ActionContext(
-                parent_action_id=parent_id,
-                decision_reasoning=reasoning,
-                confidence_score=confidence,
-            ),
-            environment=self._environment,
-            metadata=merged_metadata,
-            client_timestamp_ms=now_ms,
-            sdk_version=__version__,
-            api_key_id=self._api_key_id,
-        )
-
-        # Sign the payload
-        signable = entry.to_signable_dict()
-        payload_bytes = canonical_json(signable)
-        entry.payload_signature = sign_payload(payload_bytes, self._private_key)
-
-        # SHA-256 Hash-Chain: berechne chain_hash aus vorherigem + aktuellem Payload
-        previous_chain_hash = self._chain_heads.get(entry.session_id, "")
-        chain_hash = compute_chain_hash(previous_chain_hash, payload_bytes)
-
-        # Lokale action_id generieren (Canister gibt ggf. eine andere zurück)
-        local_action_id = f"act_{uuid.uuid4().hex[:16]}"
-
-        # 22 Candid-Positionalargumente für addLedgerEntry bauen
-        candid_args = _build_add_ledger_entry_args(
-            action_id=local_action_id,
-            org_id=self._org_id,
-            agent_id=entry.agent_id,
-            session_id=entry.session_id,
-            sequence_number=entry.sequence_number,
-            action_type=entry.action.type.value,
-            tool=entry.action.tool,
-            input_hash=entry.action.input_hash,
-            output_hash=entry.action.output_hash,
-            input_preview=entry.action.input_preview,
-            output_preview=entry.action.output_preview,
-            duration_ms=entry.action.duration_ms,
-            status=entry.action.status.value,
-            parent_action_id=entry.context.parent_action_id,
-            decision_reasoning=entry.context.decision_reasoning,
-            confidence_score=entry.context.confidence_score,
-            framework=entry.environment.framework,
-            model_id=entry.environment.model_id,
-            client_timestamp_ms=entry.client_timestamp_ms,
-            payload_signature=entry.payload_signature,
-            chain_hash=chain_hash,
-            previous_chain_hash=previous_chain_hash,
-            payload_hex=payload_bytes.hex(),
-        )
-
-        try:
-            result = self._transport.call_update("addLedgerEntry", candid_args)
-            # ic-py decodes Candid record fields as hash-keyed dicts ("_<hash>").
-            # Candid hash of "actionId" = 3776271665.
-            action_id = (
-                result.get("actionId")
-                or result.get("_3776271665")
-                or f"local_{uuid.uuid4().hex[:8]}"
+        # C4: Lock um den gesamten kritischen Bereich
+        # (sequence read → sign → hash-chain → submit → increment)
+        with self._lock:
+            # Build the entry
+            entry = LogEntry(
+                agent_id=self._agent_id,
+                session_id=self._session_id,
+                sequence_number=self._sequence,
+                action=ActionPayload(
+                    type=action_type,
+                    tool=tool,
+                    input_hash=sha256_json(input_data),
+                    output_hash=sha256_json(output_data),
+                    input_preview=truncate_preview(input_data),
+                    output_preview=truncate_preview(output_data),
+                    duration_ms=duration_ms,
+                    status=status,
+                ),
+                context=ActionContext(
+                    parent_action_id=parent_id,
+                    decision_reasoning=reasoning,
+                    confidence_score=confidence,
+                ),
+                environment=self._environment,
+                metadata=merged_metadata,
+                client_timestamp_ms=now_ms,
+                sdk_version=__version__,
+                api_key_id=self._api_key_id,
             )
 
-            # Chain-Head nach erfolgreichem Canister-Call updaten
-            self._chain_heads[entry.session_id] = chain_hash
+            # Sign the payload
+            signable = entry.to_signable_dict()
+            payload_bytes = canonical_json(signable)
+            entry.payload_signature = sign_payload(payload_bytes, self._private_key)
 
-            # Increment sequence on success
-            self._sequence += 1
+            # SHA-256 Hash-Chain: berechne chain_hash aus vorherigem + aktuellem Payload
+            previous_chain_hash = self._chain_heads.get(entry.session_id, "")
+            chain_hash = compute_chain_hash(previous_chain_hash, payload_bytes)
 
-            # Opportunistically drain spill buffer
-            if self._transport.spill_count > 0:
-                with contextlib.suppress(Exception):
-                    self._transport.drain_spill_buffer()
+            # Lokale action_id generieren (Canister gibt ggf. eine andere zurück)
+            local_action_id = f"act_{uuid.uuid4().hex[:16]}"
 
-            logger.debug(
-                "Logged action: seq=%d type=%s tool=%s → %s",
-                entry.sequence_number,
-                action_type.value,
-                tool,
-                action_id,
+            # 24 Candid-Positionalargumente für addLedgerEntry bauen
+            candid_args = _build_add_ledger_entry_args(
+                action_id=local_action_id,
+                org_id=self._org_id,
+                agent_id=entry.agent_id,
+                session_id=entry.session_id,
+                sequence_number=entry.sequence_number,
+                action_type=entry.action.type.value,
+                tool=entry.action.tool,
+                input_hash=entry.action.input_hash,
+                output_hash=entry.action.output_hash,
+                input_preview=entry.action.input_preview,
+                output_preview=entry.action.output_preview,
+                duration_ms=entry.action.duration_ms,
+                status=entry.action.status.value,
+                parent_action_id=entry.context.parent_action_id,
+                decision_reasoning=entry.context.decision_reasoning,
+                confidence_score=entry.context.confidence_score,
+                framework=entry.environment.framework,
+                model_id=entry.environment.model_id,
+                client_timestamp_ms=entry.client_timestamp_ms,
+                payload_signature=entry.payload_signature,
+                chain_hash=chain_hash,
+                previous_chain_hash=previous_chain_hash,
+                payload_hex=payload_bytes.hex(),
+                key_id=self._api_key_id,
             )
-            return action_id
 
-        except Exception as e:
-            if self._fail_open:
-                logger.warning(
-                    "Failed to log action (fail_open=True, continuing): %s", e
+            try:
+                result = self._transport.call_update("addLedgerEntry", candid_args)
+                # ic-py decodes Candid record fields as hash-keyed dicts ("_<hash>").
+                # Candid hash of "actionId" = 3776271665.
+                action_id = (
+                    result.get("actionId")
+                    or result.get("_3776271665")
+                    or f"local_{uuid.uuid4().hex[:8]}"
                 )
+
+                # Chain-Head nach erfolgreichem Canister-Call updaten
+                self._chain_heads[entry.session_id] = chain_hash
+
+                # Increment sequence on success
                 self._sequence += 1
-                return f"spilled_{uuid.uuid4().hex[:8]}"
-            raise
+
+                # Opportunistically drain spill buffer
+                if self._transport.spill_count > 0:
+                    with contextlib.suppress(Exception):
+                        self._transport.drain_spill_buffer()
+
+                logger.debug(
+                    "Logged action: seq=%d type=%s tool=%s → %s",
+                    entry.sequence_number,
+                    action_type.value,
+                    tool,
+                    action_id,
+                )
+                return action_id
+
+            except Exception as e:
+                if self._fail_open:
+                    logger.warning(
+                        "Failed to log action (fail_open=True, continuing): %s", e
+                    )
+                    self._sequence += 1
+                    return f"spilled_{uuid.uuid4().hex[:8]}"
+                raise
 
     # ------------------------------------------------------------------
     # INTERNAL: Environment auto-detection

@@ -1,6 +1,7 @@
 """Smoke Tests für AegisClient — kein echter Canister und kein echter Key nötig."""
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import MagicMock, patch
 
 # ---------------------------------------------------------------------------
@@ -59,14 +60,14 @@ def test_log_tool_call_uses_add_ledger_entry():
     assert call_args[0][0] == "addLedgerEntry"
 
 
-def test_log_tool_call_sends_23_args():
-    """addLedgerEntry muss mit genau 23 Candid-Argumenten aufgerufen werden (inkl. payloadHex)."""
+def test_log_tool_call_sends_24_args():
+    """addLedgerEntry muss mit genau 24 Candid-Argumenten aufgerufen werden."""
     client, mock_transport = _make_client()
     client.log_tool_call(tool="search", input_data={}, output_data={}, duration_ms=0)
 
     call_args = mock_transport.call_update.call_args
     args_list = call_args[0][1]  # zweites positionales Argument = Candid-Args
-    assert len(args_list) == 23
+    assert len(args_list) == 24
 
 
 def test_action_type_variant_in_args():
@@ -141,3 +142,31 @@ def test_log_error_uses_error_variant():
     args_list = call_args[0][1]
     action_type_arg = args_list[5]
     assert action_type_arg["value"] == {"error": None}
+
+
+def test_api_key_id_at_position_23():
+    """keyId (Position 23) muss der api_key_id des Clients entsprechen."""
+    client, mock_transport = _make_client()
+    client.log_tool_call(tool="search", input_data={}, output_data={}, duration_ms=0)
+
+    call_args = mock_transport.call_update.call_args
+    args_list = call_args[0][1]
+    assert args_list[23]["value"] == "ak_test"
+
+
+def test_sequence_counter_thread_safe():
+    """Sequence Counter muss unter concurrent access unique Werte liefern."""
+    client, mock_transport = _make_client()
+    sequences: list[int] = []
+
+    def log_one(_: int) -> None:
+        mock_transport.call_update.return_value = {"actionId": "x"}
+        client.log_tool_call(tool="t", input_data={}, output_data={}, duration_ms=0)
+
+    with ThreadPoolExecutor(max_workers=5) as pool:
+        list(pool.map(log_one, range(50)))
+
+    # Alle 50 Calls müssen durchgelaufen sein
+    assert mock_transport.call_update.call_count == 50
+    # Sequence muss jetzt bei 50 stehen
+    assert client.sequence_number == 50

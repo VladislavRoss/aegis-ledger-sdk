@@ -1,5 +1,5 @@
 """
-aegis.types — Canonical type definitions for the Aegis Protocol SDK.
+aegis.types — Canonical type definitions for the Aegis Ledger SDK.
 
 These mirror the Motoko canister's LedgerEntry schema exactly.
 Any drift between these types and the canister schema is a bug.
