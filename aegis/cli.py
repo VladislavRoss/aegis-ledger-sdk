@@ -31,7 +31,7 @@ def main() -> None:
     elif command == "version":
         from aegis import __version__
 
-        print(f"aegis-sdk {__version__}")
+        print(f"aegis-ledger-sdk {__version__}")
     else:
         print(f"Unknown command: {command}")
         _print_help()
@@ -41,7 +41,7 @@ def main() -> None:
 def _print_help() -> None:
     print(
         """
-aegis-sdk — Tamperproof execution ledger for AI agents
+aegis-ledger-sdk — Tamperproof execution ledger for AI agents
 
 Commands:
   keygen <path>                  Generate Ed25519 keypair for agent signing

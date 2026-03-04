@@ -1,11 +1,11 @@
-# Aegis Protocol SDK
+# Aegis Ledger SDK
 
 **Tamperproof execution ledger for AI agents.**
 
 Every tool call, decision, and error your agent makes — cryptographically sealed, hash-chained, and independently verifiable. Built on the [Internet Computer](https://internetcomputer.org) for immutability that doesn't depend on trusting a database admin.
 
 ```
-pip install aegis-sdk
+pip install aegis-ledger-sdk
 ```
 
 ## Why
@@ -56,7 +56,7 @@ def call_stripe(amount: int, currency: str) -> dict:
 ### 4. Or drop it into LangChain with zero config
 
 ```python
-from aegis.integrations.langchain import AegisCallbackHandler
+from aegis.langchain import AegisCallbackHandler
 
 handler = AegisCallbackHandler(client)
 

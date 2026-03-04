@@ -1,5 +1,5 @@
 """
-aegis.integrations.langchain — Zero-config LangChain callback handler.
+aegis.langchain — Zero-config LangChain callback handler.
 
 This is the "Trojan Horse" integration. A LangChain developer adds TWO
 lines to their existing agent and every tool call, LLM invocation, and
@@ -7,7 +7,7 @@ chain step is automatically logged to Aegis with full trace trees.
 
 Usage:
     from aegis import AegisClient
-    from aegis.integrations.langchain import AegisCallbackHandler
+    from aegis.langchain import AegisCallbackHandler
 
     client = AegisClient(
         canister_id="toqqq-lqaaa-aaaae-afc2a-cai",

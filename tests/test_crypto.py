@@ -4,7 +4,7 @@ import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 # Import from the package path used by the project
-from AEGIS_LEDGER.crypto import (
+from aegis.crypto import (
     canonical_json,
     compute_chain_hash,
     sha256_hex,

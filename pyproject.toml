@@ -82,8 +82,7 @@ exclude = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["."]
-sources = {"." = "aegis"}
+packages = ["aegis"]
 
 [tool.mypy]
 python_version = "3.10"

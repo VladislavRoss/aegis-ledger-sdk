@@ -9,7 +9,7 @@ import pytest
 class TestCliHelp:
     def test_help_flag(self):
         result = subprocess.run(
-            [sys.executable, "-m", "AEGIS_LEDGER.cli", "--help"],
+            [sys.executable, "-m", "aegis.cli", "--help"],
             capture_output=True, text=True, timeout=10,
         )
         assert result.returncode == 0
@@ -20,7 +20,7 @@ class TestCliHelp:
 
     def test_no_args_shows_help(self):
         result = subprocess.run(
-            [sys.executable, "-m", "AEGIS_LEDGER.cli"],
+            [sys.executable, "-m", "aegis.cli"],
             capture_output=True, text=True, timeout=10,
         )
         assert result.returncode == 0
@@ -30,7 +30,7 @@ class TestCliHelp:
 class TestCliUnknownCommand:
     def test_unknown_command_exits_1(self):
         result = subprocess.run(
-            [sys.executable, "-m", "AEGIS_LEDGER.cli", "nonexistent"],
+            [sys.executable, "-m", "aegis.cli", "nonexistent"],
             capture_output=True, text=True, timeout=10,
         )
         assert result.returncode == 1
@@ -40,7 +40,7 @@ class TestCliUnknownCommand:
 class TestCliKeygen:
     def test_keygen_missing_path_exits_1(self):
         result = subprocess.run(
-            [sys.executable, "-m", "AEGIS_LEDGER.cli", "keygen"],
+            [sys.executable, "-m", "aegis.cli", "keygen"],
             capture_output=True, text=True, timeout=10,
         )
         assert result.returncode == 1
@@ -50,7 +50,7 @@ class TestCliKeygen:
         key_path = tmp_path / "test_key.pem"
         env = {**__import__("os").environ, "PYTHONUTF8": "1"}
         result = subprocess.run(
-            [sys.executable, "-m", "AEGIS_LEDGER.cli", "keygen", str(key_path)],
+            [sys.executable, "-m", "aegis.cli", "keygen", str(key_path)],
             capture_output=True, text=True, timeout=10, env=env,
         )
         assert result.returncode == 0
@@ -62,7 +62,7 @@ class TestCliKeygen:
         key_path = tmp_path / "existing.pem"
         key_path.write_text("existing")
         result = subprocess.run(
-            [sys.executable, "-m", "AEGIS_LEDGER.cli", "keygen", str(key_path)],
+            [sys.executable, "-m", "aegis.cli", "keygen", str(key_path)],
             capture_output=True, text=True, timeout=10,
         )
         assert result.returncode == 1
@@ -71,7 +71,7 @@ class TestCliKeygen:
 class TestCliVerify:
     def test_verify_missing_args(self):
         result = subprocess.run(
-            [sys.executable, "-m", "AEGIS_LEDGER.cli", "verify"],
+            [sys.executable, "-m", "aegis.cli", "verify"],
             capture_output=True, text=True, timeout=10,
         )
         assert result.returncode == 1
@@ -79,7 +79,7 @@ class TestCliVerify:
 
     def test_verify_one_arg_missing(self):
         result = subprocess.run(
-            [sys.executable, "-m", "AEGIS_LEDGER.cli", "verify", "canister-id"],
+            [sys.executable, "-m", "aegis.cli", "verify", "canister-id"],
             capture_output=True, text=True, timeout=10,
         )
         assert result.returncode == 1
@@ -88,7 +88,7 @@ class TestCliVerify:
 class TestCliStatus:
     def test_status_missing_args(self):
         result = subprocess.run(
-            [sys.executable, "-m", "AEGIS_LEDGER.cli", "status"],
+            [sys.executable, "-m", "aegis.cli", "status"],
             capture_output=True, text=True, timeout=10,
         )
         assert result.returncode == 1
