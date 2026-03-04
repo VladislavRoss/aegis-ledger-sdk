@@ -191,20 +191,20 @@ def truncate_preview(obj: object, max_length: int = 200) -> str:
     if obj is None:
         return ""
 
-    _SENSITIVE_KEYS = ("key", "secret", "token", "password", "auth", "credential")
-    _SENSITIVE_STR_PREFIXES = ("Bearer ", "-----BEGIN", "sk-", "eyJ")
+    sensitive_keys = ("key", "secret", "token", "password", "auth", "credential")
+    sensitive_str_prefixes = ("Bearer ", "-----BEGIN", "sk-", "eyJ")
 
     def _redact(d: object) -> object:
         if isinstance(d, dict):
             return {
                 k: "***"
-                if any(s in k.lower() for s in _SENSITIVE_KEYS)
+                if any(s in k.lower() for s in sensitive_keys)
                 else _redact(v)
                 for k, v in d.items()
             }
         if isinstance(d, list):
             return [_redact(item) for item in d]
-        if isinstance(d, str) and any(p in d for p in _SENSITIVE_STR_PREFIXES):
+        if isinstance(d, str) and any(p in d for p in sensitive_str_prefixes):
             return "***"
         return d
 

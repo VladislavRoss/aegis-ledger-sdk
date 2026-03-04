@@ -131,7 +131,7 @@ class AegisCallbackHandler:
                 output_text = first_gen[0].text
 
         input_data = {"model": model_id, "token_usage": token_usage}
-        output_data = {"response_length": len(output_text)}
+        output_data: dict[str, object] = {"response_length": len(output_text)}
 
         if self._log_prompts and output_text:
             output_data["response_preview"] = output_text[:500]

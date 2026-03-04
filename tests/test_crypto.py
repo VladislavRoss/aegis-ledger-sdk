@@ -31,7 +31,7 @@ class TestCanonicalJson:
 
     def test_utf8_encoding(self):
         result = canonical_json({"name": "Zürich"})
-        assert "Zürich".encode("utf-8") in result
+        assert "Zürich".encode() in result
 
     def test_empty_dict(self):
         assert canonical_json({}) == b"{}"

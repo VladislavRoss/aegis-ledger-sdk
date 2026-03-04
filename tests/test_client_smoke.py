@@ -157,8 +157,6 @@ def test_api_key_id_at_position_23():
 def test_sequence_counter_thread_safe():
     """Sequence Counter muss unter concurrent access unique Werte liefern."""
     client, mock_transport = _make_client()
-    sequences: list[int] = []
-
     def log_one(_: int) -> None:
         mock_transport.call_update.return_value = {"actionId": "x"}
         client.log_tool_call(tool="t", input_data={}, output_data={}, duration_ms=0)

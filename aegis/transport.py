@@ -288,7 +288,8 @@ class CanisterTransport:
                 result = response[0]
                 if isinstance(result, dict) and "value" in result:
                     # ic-py returns [{"type": ..., "value": {...}}] for record types
-                    return result["value"] if isinstance(result["value"], dict) else {"raw": result["value"]}
+                    val = result["value"]
+                    return val if isinstance(val, dict) else {"raw": val}
                 return result if isinstance(result, dict) else {"raw": result}
 
             return {"raw": response}

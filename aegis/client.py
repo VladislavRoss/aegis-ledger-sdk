@@ -562,7 +562,7 @@ class AegisClient:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _derive_org_id(private_key_path: "str | Path") -> str:
+    def _derive_org_id(private_key_path: str | Path) -> str:
         """
         Derive the ICP principal from the agent's Ed25519 PEM key.
 

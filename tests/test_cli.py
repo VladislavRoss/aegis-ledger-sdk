@@ -3,8 +3,6 @@
 import subprocess
 import sys
 
-import pytest
-
 
 class TestCliHelp:
     def test_help_flag(self):
@@ -13,7 +11,7 @@ class TestCliHelp:
             capture_output=True, text=True, timeout=10,
         )
         assert result.returncode == 0
-        assert "aegis-sdk" in result.stdout
+        assert "aegis-ledger-sdk" in result.stdout
         assert "keygen" in result.stdout
         assert "verify" in result.stdout
         assert "status" in result.stdout
