@@ -32,7 +32,7 @@ aegis keygen ./agent_key.pem
 from aegis import AegisClient
 
 client = AegisClient(
-    canister_id="bkyz2-fmaaa-aaaaa-qaaaq-cai",  # From dashboard
+    canister_id="toqqq-lqaaa-aaaae-afc2a-cai",  # From https://www.aegis-ledger.com/dashboard
     api_key_id="ak_3f8a9b2c1d4e5f60",            # From dashboard
     private_key_path="./agent_key.pem",
     agent_id="agent_billing_v2",
@@ -94,7 +94,7 @@ Your Agent                    Aegis SDK                    ICP Canister
 Anyone can verify a ledger entry's integrity — no authentication required:
 
 ```bash
-aegis verify bkyz2-fmaaa-aaaaa-qaaaq-cai act_a7f3b2c19e4d
+aegis verify toqqq-lqaaa-aaaae-afc2a-cai act_a7f3b2c19e4d
 # ✓ VERIFIED — Entry act_a7f3b2c19e4d chain hash is valid
 #   Hash:     9f86d081884c7d659a2feaa0...
 #   Previous: 2c26b46b68ffc68ff99b453c...
