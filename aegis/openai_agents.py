@@ -25,7 +25,9 @@ Usage:
 from __future__ import annotations
 
 import contextlib
+import contextvars
 import logging
+import threading
 import time
 import uuid
 from contextlib import contextmanager
@@ -41,6 +43,10 @@ from aegis.types import ActionStatus
 logger = logging.getLogger("aegis.openai_agents")
 
 _PREVIEW_MAX = 300
+
+_active_trace_var: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "aegis_oai_trace_id", default=None
+)
 
 
 class AegisAgentTracer:
@@ -75,11 +81,9 @@ class AegisAgentTracer:
         self._log_handoffs = log_handoffs
         self._log_guardrails = log_guardrails
 
-        # Track timing per trace_id
+        # Track timing per trace_id (guarded by _times_lock for thread safety)
         self._start_times: dict[str, int] = {}
-
-        # Active trace ID
-        self._active_trace_id: str | None = None
+        self._times_lock = threading.Lock()
 
     @contextmanager
     def trace(
@@ -99,8 +103,9 @@ class AegisAgentTracer:
             The trace_id for this run.
         """
         tid = trace_id or f"oai_{uuid.uuid4().hex[:16]}"
-        self._active_trace_id = tid
-        self._start_times[tid] = int(time.time() * 1000)
+        _active_trace_var.set(tid)
+        with self._times_lock:
+            self._start_times[tid] = int(time.time() * 1000)
 
         try:
             yield tid
@@ -127,7 +132,7 @@ class AegisAgentTracer:
                     metadata={"framework": "openai_agents", "trace_id": tid},
                 )
         finally:
-            self._active_trace_id = None
+            _active_trace_var.set(None)
 
     # ------------------------------------------------------------------
     # Event logging methods
@@ -231,12 +236,15 @@ class AegisAgentTracer:
 
     def log_error(self, error: Exception, context: str = "") -> None:
         """Log an error that occurred during an agent run."""
-        self._client.log_error(
-            tool="openai_agents",
-            input_data={"context": context[:_PREVIEW_MAX]},
-            error=error,
-            metadata=self._trace_metadata(),
-        )
+        try:
+            self._client.log_error(
+                tool="openai_agents",
+                input_data={"context": context[:_PREVIEW_MAX]},
+                error=error,
+                metadata=self._trace_metadata(),
+            )
+        except Exception:
+            logger.warning("Failed to log OpenAI Agents error", exc_info=True)
 
     # ------------------------------------------------------------------
     # Internal
@@ -244,7 +252,8 @@ class AegisAgentTracer:
 
     def _elapsed(self, trace_id: str) -> int:
         """Calculate elapsed time in ms since trace started."""
-        start = self._start_times.pop(trace_id, None)
+        with self._times_lock:
+            start = self._start_times.pop(trace_id, None)
         if start is None:
             return 0
         return int(time.time() * 1000) - start
@@ -252,6 +261,7 @@ class AegisAgentTracer:
     def _trace_metadata(self) -> dict[str, str]:
         """Build metadata dict with framework and active trace_id."""
         meta: dict[str, str] = {"framework": "openai_agents"}
-        if self._active_trace_id:
-            meta["trace_id"] = self._active_trace_id
+        active_tid = _active_trace_var.get()
+        if active_tid:
+            meta["trace_id"] = active_tid
         return meta

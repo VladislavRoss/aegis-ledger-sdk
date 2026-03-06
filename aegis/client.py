@@ -113,6 +113,20 @@ class AegisClient:
             metadata: Default metadata attached to every log entry. Can be
                       overridden per-call.
         """
+        # --- Input validation ---
+        if not canister_id or not canister_id.strip():
+            raise ValueError("canister_id must not be empty")
+        if not api_key_id or not api_key_id.strip():
+            raise ValueError("api_key_id must not be empty")
+        if not agent_id or not agent_id.strip():
+            raise ValueError("agent_id must not be empty")
+        if metadata:
+            for k, v in metadata.items():
+                if not isinstance(v, str):
+                    raise TypeError(
+                        f"metadata values must be str, got {type(v).__name__} for key {k!r}"
+                    )
+
         self._canister_id = canister_id
         self._api_key_id = api_key_id
         self._agent_id = agent_id
@@ -137,9 +151,9 @@ class AegisClient:
         )
         self._transport = CanisterTransport(transport_config)
 
-        # Auto-derive org_id from PEM if caller left the default "aaaaa-aa"
+        # Auto-derive org_id from loaded key if caller left the default "aaaaa-aa"
         if self._org_id == "aaaaa-aa":
-            self._org_id = self._derive_org_id(private_key_path)
+            self._org_id = self._derive_org_id()
 
         # Action ID stack for parent-child tracking
         self._action_stack: list[str] = []
@@ -296,6 +310,12 @@ class AegisClient:
             action_type = ActionType(action_type)
 
         def decorator(func: F) -> F:
+            if inspect.iscoroutinefunction(func):
+                raise TypeError(
+                    f"@trace does not support async functions. "
+                    f"Use explicit log_* methods for async code. "
+                    f"Got coroutine function: {func.__qualname__!r}"
+                )
             resolved_tool = tool_name or func.__qualname__
 
             @functools.wraps(func)
@@ -373,11 +393,13 @@ class AegisClient:
             metadata=metadata,
         )
 
-        self._action_stack.append(action_id)
+        with self._lock:
+            self._action_stack.append(action_id)
         try:
             yield action_id
         finally:
-            self._action_stack.pop()
+            with self._lock:
+                self._action_stack.pop()
 
     # ------------------------------------------------------------------
     # PUBLIC API: Session and state management
@@ -390,11 +412,12 @@ class AegisClient:
         Returns the new session_id.
         """
         with self._lock:
+            old_session_id = self._session_id
             self._session_id = session_id or f"sess_{uuid.uuid4().hex[:16]}"
             self._sequence = 0
             self._action_stack.clear()
-            # Neue Session → kein Chain-State von vorheriger Session übernehmen
-            self._chain_heads.pop(self._session_id, None)
+            # Clean up chain state from the OLD session
+            self._chain_heads.pop(old_session_id, None)
         logger.info("New session started: %s", self._session_id)
         return self._session_id
 
@@ -417,6 +440,18 @@ class AegisClient:
         """Manually drain the spill buffer. Returns count of drained entries."""
         return self._transport.drain_spill_buffer()
 
+    def close(self) -> None:
+        """Drain spill buffer and release resources."""
+        with contextlib.suppress(Exception):
+            self._transport.drain_spill_buffer()
+        logger.info("Aegis client closed: agent=%s session=%s", self._agent_id, self._session_id)
+
+    def __enter__(self) -> "AegisClient":
+        return self
+
+    def __exit__(self, *exc: Any) -> None:
+        self.close()
+
     # ------------------------------------------------------------------
     # INTERNAL: Core logging implementation
     # ------------------------------------------------------------------
@@ -438,6 +473,11 @@ class AegisClient:
 
         This is the ONLY path through which entries reach the canister.
         """
+        if duration_ms < 0:
+            raise ValueError(f"duration_ms must be >= 0, got {duration_ms}")
+        if not (0.0 <= confidence <= 1.0):
+            raise ValueError(f"confidence must be between 0.0 and 1.0, got {confidence}")
+
         now_ms = int(time.time() * 1000)
 
         # Merge metadata
@@ -445,12 +485,11 @@ class AegisClient:
         if metadata:
             merged_metadata.update(metadata)
 
-        # Determine parent from the action stack
-        parent_id = self._action_stack[-1] if self._action_stack else ""
-
         # C4: Lock um den gesamten kritischen Bereich
         # (sequence read → sign → hash-chain → submit → increment)
         with self._lock:
+            # Determine parent from the action stack (inside lock for thread safety)
+            parent_id = self._action_stack[-1] if self._action_stack else ""
             # Build the entry
             entry = LogEntry(
                 agent_id=self._agent_id,
@@ -551,8 +590,12 @@ class AegisClient:
             except Exception as e:
                 if self._fail_open:
                     logger.warning(
-                        "Failed to log action (fail_open=True, continuing): %s", e
+                        "Failed to log action (fail_open=True, continuing): %s", e,
+                        exc_info=True,
                     )
+                    # Keep chain continuity: advance heads so subsequent
+                    # entries chain off this entry's hash even if it was spilled.
+                    self._chain_heads[entry.session_id] = chain_hash
                     self._sequence += 1
                     return f"spilled_{uuid.uuid4().hex[:8]}"
                 raise
@@ -561,20 +604,24 @@ class AegisClient:
     # INTERNAL: Environment auto-detection
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _derive_org_id(private_key_path: "str | Path") -> str:
+    def _derive_org_id(self) -> str:
         """
-        Derive the ICP principal from the agent's Ed25519 PEM key.
+        Derive the ICP principal from the loaded Ed25519 private key.
 
-        The principal is deterministic: sha224(DER_public_key), base32-encoded.
-        This must match the org_id used when registering the API key on the Dashboard.
+        Re-serializes the already-loaded key to PEM in memory (avoids
+        TOCTOU issues from re-reading the PEM file on disk).
         Falls back to 'aaaaa-aa' if ic-py is unavailable.
         """
         try:
+            from cryptography.hazmat.primitives.serialization import (
+                Encoding as _Enc,
+                NoEncryption as _NoEnc,
+                PrivateFormat as _PF,
+            )
             from ic.identity import Identity  # type: ignore[import-untyped]
 
-            pem_str = Path(str(private_key_path)).read_text()
-            identity = Identity.from_pem(pem_str)
+            pem_bytes = self._private_key.private_bytes(_Enc.PEM, _PF.PKCS8, _NoEnc())
+            identity = Identity.from_pem(pem_bytes.decode("ascii"))
             derived = str(identity.sender())
             logger.info("Derived org_id from PEM key: %s", derived)
             return derived

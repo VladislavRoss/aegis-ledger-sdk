@@ -5,6 +5,7 @@ import hashlib
 from unittest.mock import MagicMock, patch
 
 from aegis.crypto import compute_chain_hash
+from aegis.types import Environment
 
 
 # ---------------------------------------------------------------------------
@@ -95,7 +96,9 @@ def _make_client(session_id: str = "test-session"):
             api_key_id="ak_test",
             private_key_path="./fake_key.pem",
             agent_id="test-agent",
+            org_id="test-org",
             session_id=session_id,
+            environment=Environment(framework="test"),
         )
         return client, mock_transport_instance
 

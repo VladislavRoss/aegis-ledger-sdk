@@ -62,7 +62,12 @@ _CONTENT_TYPE_TSR = "application/timestamp-reply"
 
 
 class TimestampError(Exception):
-    """Raised when TSA interaction fails in an unrecoverable way."""
+    """Raised when TSA interaction fails in an unrecoverable way.
+
+    Note: Inherits from Exception (not AegisError) to avoid circular
+    imports. AegisError is re-exported from aegis.__init__ alongside
+    TimestampError for unified exception handling.
+    """
 
 
 # ---------------------------------------------------------------------------
@@ -77,7 +82,9 @@ def _der_length(length: int) -> bytes:
         return b"\x81" + bytes([length])
     if length < 0x10000:
         return b"\x82" + struct.pack(">H", length)
-    return b"\x83" + struct.pack(">I", length)[1:]  # 3-byte length
+    if length < 0x1000000:
+        return b"\x83" + struct.pack(">I", length)[1:]  # 3-byte length
+    return b"\x84" + struct.pack(">I", length)  # 4-byte length
 
 
 def _der_sequence(contents: bytes) -> bytes:
@@ -201,10 +208,151 @@ def _parse_der_tag(data: bytes, offset: int) -> tuple[int, int, int]:
             raise TimestampError("DER parse error: truncated length")
         length = struct.unpack(">I", b"\x00" + data[offset : offset + 3])[0]
         offset += 3
+    elif length_byte == 0x84:
+        if offset + 3 >= len(data):
+            raise TimestampError("DER parse error: truncated length")
+        length = struct.unpack(">I", data[offset : offset + 4])[0]
+        offset += 4
     else:
         raise TimestampError(f"DER parse error: unsupported length encoding 0x{length_byte:02x}")
 
     return tag, offset, offset + length
+
+
+def _parse_generalized_time(time_str: str) -> datetime:
+    """Parse ASN.1 GeneralizedTime (e.g. '20260306120000Z') to datetime."""
+    s = time_str.rstrip("Z")
+    for fmt in ("%Y%m%d%H%M%S.%f", "%Y%m%d%H%M%S"):
+        try:
+            return datetime.strptime(s, fmt).replace(tzinfo=timezone.utc)
+        except ValueError:
+            continue
+    raise TimestampError(f"Cannot parse GeneralizedTime: {time_str!r}")
+
+
+def _extract_tst_info_from_tsr(tsr_bytes: bytes) -> bytes:
+    """
+    Navigate the DER structure to extract TSTInfo content.
+
+    Path: TimeStampResp > timeStampToken (ContentInfo) > content (SignedData)
+          > encapContentInfo > eContent > OCTET STRING -> TSTInfo bytes
+    """
+    # TimeStampResp SEQUENCE
+    _, resp_start, resp_end = _parse_der_tag(tsr_bytes, 0)
+
+    # PKIStatusInfo SEQUENCE (skip it)
+    _, _, status_end = _parse_der_tag(tsr_bytes, resp_start)
+
+    # timeStampToken ContentInfo SEQUENCE
+    if status_end >= resp_end:
+        raise TimestampError("TSR has no timeStampToken (status-only response)")
+    tag, ci_start, ci_end = _parse_der_tag(tsr_bytes, status_end)
+    if tag != 0x30:
+        raise TimestampError(f"Expected ContentInfo SEQUENCE, got 0x{tag:02x}")
+
+    # contentType OID (skip)
+    _, _, oid_end = _parse_der_tag(tsr_bytes, ci_start)
+
+    # content [0] EXPLICIT (tag 0xA0)
+    tag, ctx_start, _ctx_end = _parse_der_tag(tsr_bytes, oid_end)
+    if tag != 0xA0:
+        raise TimestampError(f"Expected [0] EXPLICIT, got 0x{tag:02x}")
+
+    # SignedData SEQUENCE
+    tag, sd_start, _sd_end = _parse_der_tag(tsr_bytes, ctx_start)
+    if tag != 0x30:
+        raise TimestampError(f"Expected SignedData SEQUENCE, got 0x{tag:02x}")
+
+    # version INTEGER (skip)
+    _, _, ver_end = _parse_der_tag(tsr_bytes, sd_start)
+
+    # digestAlgorithms SET (skip)
+    _, _, da_end = _parse_der_tag(tsr_bytes, ver_end)
+
+    # encapContentInfo SEQUENCE
+    tag, eci_start, _eci_end = _parse_der_tag(tsr_bytes, da_end)
+    if tag != 0x30:
+        raise TimestampError(f"Expected encapContentInfo SEQUENCE, got 0x{tag:02x}")
+
+    # eContentType OID (skip)
+    _, _, ect_end = _parse_der_tag(tsr_bytes, eci_start)
+
+    # eContent [0] EXPLICIT (tag 0xA0)
+    tag, ec_start, _ec_end = _parse_der_tag(tsr_bytes, ect_end)
+    if tag != 0xA0:
+        raise TimestampError(f"Expected eContent [0] EXPLICIT, got 0x{tag:02x}")
+
+    # OCTET STRING containing TSTInfo DER
+    tag, os_start, os_end = _parse_der_tag(tsr_bytes, ec_start)
+    if tag != 0x04:
+        raise TimestampError(f"Expected OCTET STRING, got 0x{tag:02x}")
+
+    return tsr_bytes[os_start:os_end]
+
+
+def _parse_tst_info_fields(tst_info: bytes) -> tuple[datetime, int, int | None]:
+    """
+    Parse TSTInfo fields: genTime, serialNumber, nonce.
+
+    TSTInfo ::= SEQUENCE {
+        version        INTEGER { v1(1) },
+        policy         OID,
+        messageImprint SEQUENCE,
+        serialNumber   INTEGER,
+        genTime        GeneralizedTime,
+        accuracy       Accuracy OPTIONAL,
+        ordering       BOOLEAN OPTIONAL,
+        nonce          INTEGER OPTIONAL,
+        ...
+    }
+
+    Returns (genTime, serialNumber, nonce_or_None).
+    """
+    # TSTInfo SEQUENCE
+    _, seq_start, seq_end = _parse_der_tag(tst_info, 0)
+
+    # version INTEGER
+    _, _, ver_end = _parse_der_tag(tst_info, seq_start)
+
+    # policy OID
+    _, _, pol_end = _parse_der_tag(tst_info, ver_end)
+
+    # messageImprint SEQUENCE
+    _, _, mi_end = _parse_der_tag(tst_info, pol_end)
+
+    # serialNumber INTEGER
+    tag, sn_start, sn_end = _parse_der_tag(tst_info, mi_end)
+    if tag != 0x02:
+        raise TimestampError(f"Expected serialNumber INTEGER, got 0x{tag:02x}")
+    serial_number = int.from_bytes(tst_info[sn_start:sn_end], byteorder="big")
+
+    # genTime GeneralizedTime (tag 0x18)
+    tag, gt_start, gt_end = _parse_der_tag(tst_info, sn_end)
+    if tag != 0x18:
+        raise TimestampError(f"Expected GeneralizedTime (0x18), got 0x{tag:02x}")
+    gen_time_str = tst_info[gt_start:gt_end].decode("ascii")
+    gen_time = _parse_generalized_time(gen_time_str)
+
+    # Scan remaining optional fields for nonce (INTEGER after accuracy/ordering)
+    nonce: int | None = None
+    offset = gt_end
+    while offset < seq_end:
+        tag, f_start, f_end = _parse_der_tag(tst_info, offset)
+        if tag == 0x30:
+            pass  # accuracy (SEQUENCE) — skip
+        elif tag == 0x01:
+            pass  # ordering (BOOLEAN) — skip
+        elif tag == 0x02:
+            # nonce INTEGER
+            nonce = int.from_bytes(tst_info[f_start:f_end], byteorder="big")
+            break
+        elif tag & 0x80:
+            pass  # context-specific tag — skip and keep scanning for nonce
+        else:
+            break  # unknown universal tag — stop
+        offset = f_end
+
+    return gen_time, serial_number, nonce
 
 
 def _extract_status_from_tsr(data: bytes) -> int:
@@ -502,7 +650,11 @@ class TimestampAuthority:
     # ------------------------------------------------------------------
 
     def _send_request(self, tsq: bytes) -> bytes:
-        """Send a TimeStampReq to the TSA and return the raw response."""
+        """Send a TimeStampReq to the TSA and return the raw response.
+
+        Retries once on HTTP 429/503 if a Retry-After header is present
+        (capped at 30 seconds to avoid blocking agent execution).
+        """
         headers: dict[str, str] = {
             "Content-Type": _CONTENT_TYPE_TSQ,
         }
@@ -520,15 +672,38 @@ class TimestampAuthority:
         if self._cert_path and os.path.isfile(self._cert_path):
             context = ssl.create_default_context(cafile=self._cert_path)
 
-        with urlopen(req, timeout=self._timeout, context=context) as resp:
-            content_type = resp.headers.get("Content-Type", "")
-            if _CONTENT_TYPE_TSR not in content_type:
-                logger.warning(
-                    "TSA returned unexpected Content-Type: %s (expected %s)",
-                    content_type,
-                    _CONTENT_TYPE_TSR,
-                )
-            return resp.read()  # type: ignore[no-any-return]
+        import time as _time
+        from urllib.error import HTTPError
+
+        max_attempts = 2
+        for attempt in range(max_attempts):
+            try:
+                with urlopen(req, timeout=self._timeout, context=context) as resp:
+                    content_type = resp.headers.get("Content-Type", "")
+                    if _CONTENT_TYPE_TSR not in content_type:
+                        logger.warning(
+                            "TSA returned unexpected Content-Type: %s (expected %s)",
+                            content_type,
+                            _CONTENT_TYPE_TSR,
+                        )
+                    return resp.read()  # type: ignore[no-any-return]
+            except HTTPError as e:
+                if e.code in (429, 503) and attempt < max_attempts - 1:
+                    retry_after = e.headers.get("Retry-After", "")
+                    try:
+                        wait = min(int(retry_after), 30) if retry_after else 2
+                    except ValueError:
+                        wait = 2
+                    logger.warning(
+                        "TSA returned %d, retrying after %ds", e.code, wait
+                    )
+                    _time.sleep(wait)
+                    # Rebuild request for retry (urllib may have consumed it)
+                    req = Request(self._url, data=tsq, headers=headers, method="POST")
+                    continue
+                raise
+
+        raise TimestampError("TSA request failed after retries")  # pragma: no cover
 
     def _parse_response(
         self,
@@ -548,19 +723,29 @@ class TimestampAuthority:
                 "3=waiting, 4=revocationWarning, 5=revocationNotification"
             )
 
-        # For a full implementation, we would parse the TSTInfo from the
-        # embedded CMS SignedData to extract the exact genTime and serial.
-        # The DER structure is deeply nested:
-        #   TimeStampResp > timeStampToken (ContentInfo) > content (SignedData)
-        #   > encapContentInfo > eContent (TSTInfo) > genTime, serialNumber
-        #
-        # For now, we store the full TSR as-is (legally sufficient as evidence)
-        # and record UTC now as a close approximation. The actual genTime is
-        # inside the DER and can be extracted by OpenSSL for court proceedings.
+        # Parse TSTInfo to extract real genTime, serialNumber, and verify nonce
+        gen_time = datetime.now(timezone.utc)  # fallback
+        serial = f"nonce-{nonce}"
+        parsed_nonce: int | None = None
+
+        try:
+            tst_info = _extract_tst_info_from_tsr(tsr_bytes)
+            parsed_time, parsed_serial, parsed_nonce = _parse_tst_info_fields(tst_info)
+            gen_time = parsed_time
+            serial = str(parsed_serial)
+        except Exception as exc:
+            logger.warning("Could not parse TSTInfo from TSR (using local time): %s", exc)
+
+        # Nonce verification (RFC 3161 Section 2.4.2)
+        if parsed_nonce is not None and parsed_nonce != nonce:
+            raise TimestampError(
+                f"Nonce mismatch: sent {nonce}, received {parsed_nonce}. "
+                "Possible replay attack or TSA misconfiguration."
+            )
 
         return TimestampToken(
-            timestamp_utc=datetime.now(timezone.utc),
-            serial_number=f"nonce-{nonce}",
+            timestamp_utc=gen_time,
+            serial_number=serial,
             tsa_name=self._url,
             hash_algorithm=self._hash_algorithm,
             hash_value=hex_hash,

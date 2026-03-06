@@ -29,6 +29,7 @@ Usage:
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from typing import TYPE_CHECKING, Any
 
@@ -82,9 +83,7 @@ class AegisCallbackHandler:
 
         # Track timing per run_id
         self._start_times: dict[UUID, int] = {}
-
-        # Track parent relationships
-        self._run_parents: dict[UUID, str] = {}
+        self._times_lock = threading.Lock()
 
     # ------------------------------------------------------------------
     # LLM callbacks
@@ -100,7 +99,8 @@ class AegisCallbackHandler:
         **kwargs: Any,
     ) -> None:
         """Called when an LLM starts generating."""
-        self._start_times[run_id] = int(time.time() * 1000)
+        with self._times_lock:
+            self._start_times[run_id] = int(time.time() * 1000)
 
     def on_llm_end(
         self,
@@ -127,8 +127,14 @@ class AegisCallbackHandler:
 
         if hasattr(response, "generations") and response.generations:
             first_gen = response.generations[0]
-            if first_gen and hasattr(first_gen[0], "text"):
-                output_text = first_gen[0].text
+            if first_gen:
+                gen = first_gen[0]
+                # Support both Generation.text and ChatGeneration.message.content
+                output_text = (
+                    getattr(gen, "text", None)
+                    or getattr(getattr(gen, "message", None), "content", "")
+                    or ""
+                )
 
         input_data = {"model": model_id, "token_usage": token_usage}
         output_data: dict[str, object] = {"response_length": len(output_text)}
@@ -136,14 +142,17 @@ class AegisCallbackHandler:
         if self._log_prompts and output_text:
             output_data["response_preview"] = output_text[:500]
 
-        self._client.log_decision(
-            reasoning=f"LLM generation completed ({model_id})",
-            confidence=1.0,
-            input_data=input_data,
-            output_data=output_data,
-            duration_ms=elapsed,
-            metadata={"langchain_run_id": str(run_id)},
-        )
+        try:
+            self._client.log_decision(
+                reasoning=f"LLM generation completed ({model_id})",
+                confidence=1.0,
+                input_data=input_data,
+                output_data=output_data,
+                duration_ms=elapsed,
+                metadata={"langchain_run_id": str(run_id)},
+            )
+        except Exception:
+            logger.warning("Failed to log LangChain LLM end", exc_info=True)
 
     def on_llm_error(
         self,
@@ -177,7 +186,8 @@ class AegisCallbackHandler:
         **kwargs: Any,
     ) -> None:
         """Called when a tool starts executing."""
-        self._start_times[run_id] = int(time.time() * 1000)
+        with self._times_lock:
+            self._start_times[run_id] = int(time.time() * 1000)
 
     def on_tool_end(
         self,
@@ -191,14 +201,17 @@ class AegisCallbackHandler:
         """Called when a tool finishes executing."""
         elapsed = self._elapsed(run_id)
 
-        self._client.log_tool_call(
-            tool=name,
-            input_data={"tool_input": kwargs.get("tool_input", "")},
-            output_data={"output_length": len(output), "output_preview": output[:300]},
-            duration_ms=elapsed,
-            status=ActionStatus.SUCCESS,
-            metadata={"langchain_run_id": str(run_id)},
-        )
+        try:
+            self._client.log_tool_call(
+                tool=name,
+                input_data={"tool_input": kwargs.get("tool_input", "")},
+                output_data={"output_length": len(output), "output_preview": output[:300]},
+                duration_ms=elapsed,
+                status=ActionStatus.SUCCESS,
+                metadata={"langchain_run_id": str(run_id)},
+            )
+        except Exception:
+            logger.warning("Failed to log LangChain tool end", exc_info=True)
 
     def on_tool_error(
         self,
@@ -233,7 +246,8 @@ class AegisCallbackHandler:
         **kwargs: Any,
     ) -> None:
         """Called when a chain starts."""
-        self._start_times[run_id] = int(time.time() * 1000)
+        with self._times_lock:
+            self._start_times[run_id] = int(time.time() * 1000)
 
     def on_chain_end(
         self,
@@ -290,12 +304,15 @@ class AegisCallbackHandler:
         tool_input = getattr(action, "tool_input", {})
         log_text = getattr(action, "log", "")
 
-        self._client.log_decision(
-            reasoning=f"Agent selected tool: {tool_name}. {log_text[:200]}",
-            confidence=0.0,
-            input_data={"selected_tool": tool_name, "tool_input_preview": str(tool_input)[:200]},
-            metadata={"langchain_run_id": str(run_id)},
-        )
+        try:
+            self._client.log_decision(
+                reasoning=f"Agent selected tool: {tool_name}. {log_text[:200]}",
+                confidence=0.0,
+                input_data={"selected_tool": tool_name, "tool_input_preview": str(tool_input)[:200]},
+                metadata={"langchain_run_id": str(run_id)},
+            )
+        except Exception:
+            logger.warning("Failed to log LangChain agent action", exc_info=True)
 
     def on_agent_finish(
         self,
@@ -309,12 +326,15 @@ class AegisCallbackHandler:
         output = getattr(finish, "return_values", {})
         log_text = getattr(finish, "log", "")
 
-        self._client.log_decision(
-            reasoning=f"Agent finished. {log_text[:200]}",
-            confidence=1.0,
-            output_data={"return_keys": list(output.keys()) if isinstance(output, dict) else []},
-            metadata={"langchain_run_id": str(run_id)},
-        )
+        try:
+            self._client.log_decision(
+                reasoning=f"Agent finished. {log_text[:200]}",
+                confidence=1.0,
+                output_data={"return_keys": list(output.keys()) if isinstance(output, dict) else []},
+                metadata={"langchain_run_id": str(run_id)},
+            )
+        except Exception:
+            logger.warning("Failed to log LangChain agent finish", exc_info=True)
 
     # ------------------------------------------------------------------
     # Internal
@@ -322,7 +342,8 @@ class AegisCallbackHandler:
 
     def _elapsed(self, run_id: UUID) -> int:
         """Calculate elapsed time in ms since run started."""
-        start = self._start_times.pop(run_id, None)
+        with self._times_lock:
+            start = self._start_times.pop(run_id, None)
         if start is None:
             return 0
         return int(time.time() * 1000) - start

@@ -222,6 +222,14 @@ class TestLogError:
         kw = mock_client.log_error.call_args.kwargs
         assert kw["tool"] == "autogen"
 
+    def test_log_error_fail_open(
+        self, hook: AegisAutoGenHook, mock_client: MagicMock
+    ) -> None:
+        """log_error() should not raise even if client.log_error() fails."""
+        mock_client.log_error.side_effect = RuntimeError("connection lost")
+        # Should NOT raise
+        hook.log_error(ValueError("original"), agent_name="bot")
+
 
 # ---------------------------------------------------------------------------
 # Extract content
@@ -238,8 +246,16 @@ class TestExtractContent:
     def test_dict_without_content(self) -> None:
         assert AegisAutoGenHook._extract_content({"role": "user"}) == ""
 
-    def test_other_type(self) -> None:
-        assert AegisAutoGenHook._extract_content(42) == "42"
+    def test_other_type_returns_type_name(self) -> None:
+        """Non-str/dict types return type name to prevent data leakage."""
+        assert AegisAutoGenHook._extract_content(42) == "<int>"
+        assert AegisAutoGenHook._extract_content([1, 2, 3]) == "<list>"
+
+    def test_string_truncation(self) -> None:
+        """Long strings are truncated at _PREVIEW_MAX."""
+        long_msg = "x" * 500
+        result = AegisAutoGenHook._extract_content(long_msg)
+        assert len(result) == 300  # _PREVIEW_MAX
 
 
 # ---------------------------------------------------------------------------
@@ -264,3 +280,75 @@ class TestElapsed:
         hook._start_times["key"] = 1000
         hook._elapsed("key")
         assert "key" not in hook._start_times
+
+
+# ---------------------------------------------------------------------------
+# Batch 7: Edge Cases (Phase 23)
+# ---------------------------------------------------------------------------
+
+
+class TestEdgeCases:
+    def test_concurrent_tool_calls_thread_safe(
+        self, mock_client: MagicMock
+    ) -> None:
+        """10 concurrent on_tool_call invocations must not lose any calls."""
+        import threading
+
+        hook = AegisAutoGenHook(mock_client)
+        errors: list[Exception] = []
+
+        def call_tool(i: int) -> None:
+            try:
+                hook.on_tool_call(
+                    tool_name=f"tool_{i}",
+                    arguments={"idx": i},
+                    caller=f"agent_{i}",
+                )
+                hook.on_tool_result(
+                    tool_name=f"tool_{i}",
+                    result=f"result_{i}",
+                    caller=f"agent_{i}",
+                )
+            except Exception as e:
+                errors.append(e)
+
+        threads = [threading.Thread(target=call_tool, args=(i,)) for i in range(10)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert not errors, f"Thread errors: {errors}"
+        # All 10 tool calls should have been logged
+        assert mock_client.log_tool_call.call_count == 10
+
+    def test_on_tool_result_with_none_result(
+        self, hook: AegisAutoGenHook, mock_client: MagicMock
+    ) -> None:
+        """on_tool_result with result=None should produce empty preview."""
+        hook.on_tool_call(tool_name="void_tool", arguments={}, caller="bot")
+        hook.on_tool_result(tool_name="void_tool", result=None, caller="bot")
+
+        kw = mock_client.log_tool_call.call_args.kwargs
+        assert kw["output_data"]["result_preview"] == ""
+        assert kw["output_data"]["result_length"] == 0
+
+    def test_on_completion_without_summary(
+        self, hook: AegisAutoGenHook, mock_client: MagicMock
+    ) -> None:
+        """on_completion with empty summary should still log decision."""
+        hook.on_completion(agent_name="bot", summary="")
+        mock_client.log_decision.assert_called_once()
+        kw = mock_client.log_decision.call_args.kwargs
+        assert kw["reasoning"] == "AutoGen conversation completed by bot"
+        assert kw["output_data"]["summary"] == ""
+
+    def test_large_message_truncation(
+        self, hook: AegisAutoGenHook, mock_client: MagicMock
+    ) -> None:
+        """Large message body (100KB) should be truncated to _PREVIEW_MAX."""
+        large_msg = "x" * 100_000
+        hook.on_message_sent("user", "bot", large_msg)
+        kw = mock_client.log_observation.call_args.kwargs
+        # input_data should be truncated
+        assert len(str(kw["input_data"])) <= 300 + 50  # some margin for dict formatting

@@ -48,7 +48,8 @@ class TestInit:
         assert t._log_guardrails is False
 
     def test_no_active_trace(self, tracer: AegisAgentTracer) -> None:
-        assert tracer._active_trace_id is None
+        from aegis.openai_agents import _active_trace_var
+        assert _active_trace_var.get(None) is None
 
 
 # ---------------------------------------------------------------------------
@@ -69,15 +70,17 @@ class TestTrace:
     def test_active_trace_id_set_inside(
         self, tracer: AegisAgentTracer
     ) -> None:
+        from aegis.openai_agents import _active_trace_var
         with tracer.trace() as tid:
-            assert tracer._active_trace_id == tid
+            assert _active_trace_var.get(None) == tid
 
     def test_active_trace_id_cleared_after(
         self, tracer: AegisAgentTracer
     ) -> None:
+        from aegis.openai_agents import _active_trace_var
         with tracer.trace():
             pass
-        assert tracer._active_trace_id is None
+        assert _active_trace_var.get(None) is None
 
     def test_logs_completion_on_success(
         self, tracer: AegisAgentTracer, mock_client: MagicMock
@@ -110,9 +113,10 @@ class TestTrace:
     def test_trace_id_cleared_on_exception(
         self, tracer: AegisAgentTracer
     ) -> None:
+        from aegis.openai_agents import _active_trace_var
         with pytest.raises(RuntimeError), tracer.trace():
             raise RuntimeError("fail")
-        assert tracer._active_trace_id is None
+        assert _active_trace_var.get(None) is None
 
     def test_duration_in_completion(
         self, tracer: AegisAgentTracer, mock_client: MagicMock

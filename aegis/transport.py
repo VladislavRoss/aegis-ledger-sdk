@@ -15,9 +15,11 @@ Design decisions:
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
+import random
 import time
 from pathlib import Path
 from typing import Any
@@ -26,6 +28,7 @@ logger = logging.getLogger("aegis.transport")
 
 
 _ALLOWED_SPILL_METHODS: frozenset[str] = frozenset({"addLedgerEntry"})
+_MAX_SPILL_ENTRIES: int = 1000
 
 _ACTION_TYPE_MAP: dict[str, str] = {
     "tool_call": "toolCall",
@@ -45,7 +48,11 @@ def action_type_to_candid_variant(action_type: str) -> dict[str, None]:
     return {_ACTION_TYPE_MAP[action_type]: None}
 
 
-class CanisterError(Exception):
+class AegisError(Exception):
+    """Base exception for all Aegis SDK errors."""
+
+
+class CanisterError(AegisError):
     """Raised when the canister returns an error response."""
 
     def __init__(self, message: str, error_code: str = "UNKNOWN"):
@@ -149,6 +156,13 @@ class TransportConfig:
         spill_dir: str | Path | None = None,
         private_key_path: str | Path | None = None,
     ):
+        if max_retries < 0:
+            raise ValueError(f"max_retries must be >= 0, got {max_retries}")
+        if retry_base_delay_s < 0:
+            raise ValueError(f"retry_base_delay_s must be >= 0, got {retry_base_delay_s}")
+        if timeout_s <= 0:
+            raise ValueError(f"timeout_s must be > 0, got {timeout_s}")
+
         self.canister_id = canister_id
         self.network = network
         self.max_retries = max_retries
@@ -224,16 +238,28 @@ class CanisterTransport:
             try:
                 return self._do_call(method, args, call_type="update")
             except Exception as e:
-                delay = self._config.retry_base_delay_s * (2**attempt)
-                logger.warning(
-                    "Canister call %s failed (attempt %d/%d): %s. Retrying in %.1fs",
-                    method,
-                    attempt + 1,
-                    self._config.max_retries,
-                    e,
-                    delay,
-                )
-                time.sleep(delay)
+                # Skip sleep after last attempt (we're about to spill anyway)
+                if attempt < self._config.max_retries - 1:
+                    delay = self._config.retry_base_delay_s * (2**attempt)
+                    # Add jitter (0.5x-1.0x) to prevent thundering herd
+                    delay *= 0.5 + random.random() * 0.5  # noqa: S311
+                    logger.warning(
+                        "Canister call %s failed (attempt %d/%d): %s. Retrying in %.1fs",
+                        method,
+                        attempt + 1,
+                        self._config.max_retries,
+                        e,
+                        delay,
+                    )
+                    time.sleep(delay)
+                else:
+                    logger.warning(
+                        "Canister call %s failed (attempt %d/%d): %s",
+                        method,
+                        attempt + 1,
+                        self._config.max_retries,
+                        e,
+                    )
 
         # All retries exhausted — spill to local disk
         self._spill_to_disk(method, args)
@@ -307,6 +333,21 @@ class CanisterTransport:
                 f"Spill directory {spill_dir} is a symlink — refusing to write for security"
             )
         spill_dir.chmod(0o700)  # owner-only directory
+
+        # Enforce spill buffer size limit — discard oldest entries if full
+        if self._spill_path.exists():
+            existing = self._spill_path.read_text().strip().split("\n")
+            existing = [line for line in existing if line]
+            if len(existing) >= _MAX_SPILL_ENTRIES:
+                discard_count = len(existing) - _MAX_SPILL_ENTRIES + 1
+                logger.warning(
+                    "Spill buffer full (%d entries). Discarding %d oldest entries.",
+                    len(existing),
+                    discard_count,
+                )
+                existing = existing[discard_count:]
+                self._spill_path.write_text("\n".join(existing) + "\n")
+
         entry = {
             "method": method,
             "args": args,
@@ -315,8 +356,14 @@ class CanisterTransport:
         }
         # H-1: create/append with 0o600 (owner read/write only)
         fd = os.open(str(self._spill_path), os.O_CREAT | os.O_WRONLY | os.O_APPEND, 0o600)
-        with os.fdopen(fd, "a") as f:
-            f.write(json.dumps(entry, default=str) + "\n")
+        try:
+            with os.fdopen(fd, "a") as f:
+                f.write(json.dumps(entry, default=str) + "\n")
+        except Exception:
+            # fdopen failed — close the raw fd to prevent leak
+            with contextlib.suppress(OSError):
+                os.close(fd)
+            raise
 
     def drain_spill_buffer(self) -> int:
         """
@@ -345,7 +392,8 @@ class CanisterTransport:
                 # TTL: discard entries older than 30 days
                 age_ms = now_ms - entry.get("timestamp_ms", 0)
                 if age_ms > spill_ttl_ms:
-                    logger.warning("Discarding spill entry older than 30 days (age=%dd)", age_ms // (24 * 60 * 60 * 1000))
+                    age_days = age_ms // (24 * 60 * 60 * 1000)
+                    logger.warning("Discarding spill entry older than 30d (age=%dd)", age_days)
                     continue
 
                 method = entry.get("method", "")
@@ -355,6 +403,7 @@ class CanisterTransport:
                 self._do_call(method, entry["args"], call_type="update")
                 drained += 1
             except Exception:
+                logger.warning("Spill replay failed for entry", exc_info=True)
                 failed.append(line)
 
         # Rewrite spill file with only the still-failed entries
@@ -374,4 +423,6 @@ class CanisterTransport:
         if not self._spill_path.exists():
             return 0
         text = self._spill_path.read_text().strip()
-        return len(text.split("\n")) if text else 0
+        if not text:
+            return 0
+        return len([line for line in text.split("\n") if line])

@@ -22,6 +22,21 @@ Full documentation: https://www.aegis-ledger.com/docs
 
 from aegis.client import AegisClient
 from aegis.crypto import generate_keypair, sha256_hex, sha256_json
+from aegis.report import (
+    ComplianceReport,
+    ReportFormat,
+    ReportGenerationError,
+    generate_all_reports,
+    generate_pdf,
+    generate_report,
+)
+from aegis.timestamp import (
+    TimestampAuthority,
+    TimestampError,
+    TimestampToken,
+    TimestampVerification,
+)
+from aegis.transport import AegisError, CanisterError
 from aegis.types import (
     ActionContext,
     ActionPayload,
@@ -36,14 +51,26 @@ __version__ = "0.3.0"
 
 __all__ = [
     "AegisClient",
+    "AegisError",
     "ActionContext",
     "ActionPayload",
     "ActionStatus",
     "ActionType",
+    "CanisterError",
+    "ComplianceReport",
     "Environment",
     "LogEntry",
+    "ReportFormat",
+    "ReportGenerationError",
+    "TimestampAuthority",
+    "TimestampError",
+    "TimestampToken",
+    "TimestampVerification",
     "VerificationResult",
+    "generate_all_reports",
     "generate_keypair",
+    "generate_pdf",
+    "generate_report",
     "sha256_hex",
     "sha256_json",
 ]

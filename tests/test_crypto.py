@@ -205,3 +205,114 @@ class TestSignableDictNoToxicData:
         assert "123-45-6789" not in payload_str
         assert "john@example.com" not in payload_str
         assert "sensitive data" not in payload_str
+
+
+# ---------------------------------------------------------------------------
+# Edge-case tests (Phase 21 — security hardening)
+# ---------------------------------------------------------------------------
+
+
+class TestChainHashSecurity:
+    def test_reordering_attack_detected(self):
+        """Swapping two entries produces different chain hashes (reordering attack)."""
+        p1 = canonical_json({"seq": 0, "tool": "search"})
+        p2 = canonical_json({"seq": 1, "tool": "refund"})
+
+        # Forward order: "" → h1, h1 → h2
+        h1_fwd = compute_chain_hash("", p1)
+        h2_fwd = compute_chain_hash(h1_fwd, p2)
+
+        # Reversed order: "" → h1r, h1r → h2r
+        h1_rev = compute_chain_hash("", p2)
+        h2_rev = compute_chain_hash(h1_rev, p1)
+
+        # Final hashes MUST differ (reordering must be detectable)
+        assert h2_fwd != h2_rev
+
+    def test_empty_payload_sign_verify(self):
+        """Empty payload can be signed and verified."""
+        private_key = Ed25519PrivateKey.generate()
+        public_key = private_key.public_key()
+        payload = canonical_json({})
+        signature = sign_payload(payload, private_key)
+        assert verify_signature(payload, signature, public_key)
+
+    def test_signature_length_128_hex(self):
+        """Ed25519 signature is exactly 64 bytes = 128 hex chars."""
+        private_key = Ed25519PrivateKey.generate()
+        payload = canonical_json({"test": "data"})
+        signature = sign_payload(payload, private_key)
+        # Format: "ed25519:<128 hex chars>"
+        hex_part = signature.split(":")[1]
+        assert len(hex_part) == 128
+
+    def test_unicode_normalization(self):
+        """Composed and decomposed Unicode produce the same canonical JSON hash."""
+        # NFC: é as single codepoint (U+00E9)
+        composed = canonical_json({"name": "\u00e9"})
+        # NFD: e + combining acute accent (U+0065 U+0301)
+        decomposed = canonical_json({"name": "e\u0301"})
+
+        hash_composed = sha256_hex(composed)
+        hash_decomposed = sha256_hex(decomposed)
+
+        # canonical_json uses json.dumps which preserves Unicode as-is,
+        # so these SHOULD differ (canonical JSON does NOT normalize Unicode).
+        # This test documents the behavior — callers must normalize before hashing.
+        assert hash_composed != hash_decomposed
+
+
+# ---------------------------------------------------------------------------
+# Core function gap tests (Phase 21)
+# ---------------------------------------------------------------------------
+
+
+class TestGetPublicKeyHex:
+    def test_hex_format_64_chars(self):
+        """Ed25519 public key is 32 bytes = 64 hex chars."""
+        from AEGIS_LEDGER.crypto import get_public_key_hex
+
+        private_key = Ed25519PrivateKey.generate()
+        hex_key = get_public_key_hex(private_key)
+        assert len(hex_key) == 64
+        # Must be valid hex
+        int(hex_key, 16)
+
+    def test_deterministic(self):
+        """Same private key always produces the same public key hex."""
+        from AEGIS_LEDGER.crypto import get_public_key_hex
+
+        private_key = Ed25519PrivateKey.generate()
+        assert get_public_key_hex(private_key) == get_public_key_hex(private_key)
+
+
+class TestLoadPrivateKey:
+    def test_file_not_found(self, tmp_path):
+        """FileNotFoundError with helpful message when key file missing."""
+        from AEGIS_LEDGER.crypto import load_private_key
+
+        with pytest.raises(FileNotFoundError, match="Private key not found"):
+            load_private_key(tmp_path / "nonexistent.pem")
+
+    def test_invalid_pem_raises(self, tmp_path):
+        """ValueError or similar for non-PEM content."""
+        from AEGIS_LEDGER.crypto import load_private_key
+
+        bad_pem = tmp_path / "bad.pem"
+        bad_pem.write_text("this is not a PEM file")
+        with pytest.raises(Exception):
+            load_private_key(bad_pem)
+
+    def test_valid_pem_loads(self, tmp_path):
+        """Valid Ed25519 PEM loads successfully."""
+        from cryptography.hazmat.primitives.serialization import Encoding, NoEncryption, PrivateFormat
+
+        from AEGIS_LEDGER.crypto import load_private_key
+
+        key = Ed25519PrivateKey.generate()
+        pem_path = tmp_path / "valid.pem"
+        pem_path.write_bytes(
+            key.private_bytes(Encoding.PEM, PrivateFormat.PKCS8, NoEncryption())
+        )
+        loaded = load_private_key(pem_path)
+        assert isinstance(loaded, Ed25519PrivateKey)

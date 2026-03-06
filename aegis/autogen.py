@@ -32,6 +32,7 @@ Usage:
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from typing import TYPE_CHECKING, Any
 
@@ -78,6 +79,7 @@ class AegisAutoGenHook:
 
         # Track timing per conversation key
         self._start_times: dict[str, int] = {}
+        self._times_lock = threading.Lock()
 
     # ------------------------------------------------------------------
     # Message hooks
@@ -170,7 +172,8 @@ class AegisAutoGenHook:
             caller: Name or ID of the agent invoking the tool.
         """
         key = f"{caller}:{tool_name}"
-        self._start_times[key] = int(time.time() * 1000)
+        with self._times_lock:
+            self._start_times[key] = int(time.time() * 1000)
 
     def on_tool_result(
         self,
@@ -261,12 +264,15 @@ class AegisAutoGenHook:
             agent_name: Name or ID of the agent where the error occurred.
             context: Additional context about the error.
         """
-        self._client.log_error(
-            tool=f"autogen:{agent_name}" if agent_name else "autogen",
-            input_data={"context": context[:_PREVIEW_MAX], "agent": agent_name},
-            error=error,
-            metadata={"framework": "autogen"},
-        )
+        try:
+            self._client.log_error(
+                tool=f"autogen:{agent_name}" if agent_name else "autogen",
+                input_data={"context": context[:_PREVIEW_MAX], "agent": agent_name},
+                error=error,
+                metadata={"framework": "autogen"},
+            )
+        except Exception:
+            logger.warning("Failed to log AutoGen error", exc_info=True)
 
     # ------------------------------------------------------------------
     # Internal
@@ -274,16 +280,21 @@ class AegisAutoGenHook:
 
     def _elapsed(self, key: str) -> int:
         """Calculate elapsed time in ms since operation started."""
-        start = self._start_times.pop(key, None)
+        with self._times_lock:
+            start = self._start_times.pop(key, None)
         if start is None:
             return 0
         return int(time.time() * 1000) - start
 
     @staticmethod
     def _extract_content(message: Any) -> str:
-        """Extract text content from an AutoGen message (str or dict)."""
+        """Extract text content from an AutoGen message (str or dict).
+
+        Returns a safe preview — never the full repr of arbitrary objects
+        (which could leak internal data to the ledger).
+        """
         if isinstance(message, str):
-            return message
+            return message[:_PREVIEW_MAX]
         if isinstance(message, dict):
-            return str(message.get("content", ""))
-        return str(message)
+            return str(message.get("content", ""))[:_PREVIEW_MAX]
+        return f"<{type(message).__name__}>"

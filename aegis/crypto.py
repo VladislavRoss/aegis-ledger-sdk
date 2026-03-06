@@ -17,6 +17,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
+import warnings
 from pathlib import Path
 
 from cryptography.exceptions import InvalidSignature
@@ -218,3 +220,140 @@ def truncate_preview(obj: object, max_length: int = 200) -> str:
         return serialized
 
     return serialized[: max_length - 3] + "..."
+
+
+# ── PII Detection & Sanitization ─────────────────────────────────────────
+
+# Swiss AHV number: 756.XXXX.XXXX.XX (13 digits, Luhn check)
+_AHV_PATTERN = re.compile(r"756[.\s-]?\d{4}[.\s-]?\d{4}[.\s-]?\d{2}")
+
+# Common PII patterns
+_EMAIL_PATTERN = re.compile(
+    r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}"
+)
+_PHONE_PATTERN = re.compile(
+    r"(?:\+\d{1,3}[\s\-]?)?\(?\d{2,4}\)?[\s\-]?\d{3,4}[\s\-]?\d{3,4}"
+)
+_IP_PATTERN = re.compile(
+    r"\b(?:\d{1,3}\.){3}\d{1,3}\b"
+)
+# US SSN
+_SSN_PATTERN = re.compile(r"\b\d{3}[.\-\s]\d{2}[.\-\s]\d{4}\b")
+# Credit card (13-19 digits with optional separators)
+_CC_PATTERN = re.compile(r"\b(?:\d[.\-\s]?){13,19}\b")
+
+
+def _luhn_check(digits: str) -> bool:
+    """Luhn algorithm for credit card / AHV validation."""
+    total = 0
+    for i, ch in enumerate(reversed(digits)):
+        n = int(ch)
+        if i % 2 == 1:
+            n *= 2
+            if n > 9:
+                n -= 9
+        total += n
+    return total % 10 == 0
+
+
+def detect_pii(text: str) -> list[str]:
+    """
+    Scan text for potential PII patterns.
+
+    Returns a list of pattern names found (e.g., ['email', 'ahv']).
+    Does NOT modify the text — use redact_pii() for that.
+    """
+    found: list[str] = []
+    if _AHV_PATTERN.search(text):
+        found.append("ahv")
+    if _EMAIL_PATTERN.search(text):
+        found.append("email")
+    if _PHONE_PATTERN.search(text):
+        found.append("phone")
+    if _IP_PATTERN.search(text):
+        found.append("ip")
+    if _SSN_PATTERN.search(text):
+        found.append("ssn")
+    # Credit card: only flag if Luhn-valid
+    for m in _CC_PATTERN.finditer(text):
+        digits = re.sub(r"[^\d]", "", m.group())
+        if len(digits) >= 13 and _luhn_check(digits):
+            found.append("credit_card")
+            break
+    return found
+
+
+def redact_pii(text: str, warn: bool = True) -> str:
+    """
+    Replace detected PII patterns with SHA-256 hashes.
+
+    When warn=True (default), emits a Python warning for each detection
+    so developers notice accidental PII leakage during development.
+    """
+    detections = detect_pii(text)
+    if not detections and not any([
+        _AHV_PATTERN.search(text),
+        _EMAIL_PATTERN.search(text),
+    ]):
+        return text
+
+    result = text
+
+    def _hash_match(m: re.Match[str]) -> str:
+        return "sha256:" + hashlib.sha256(m.group().encode()).hexdigest()[:16]
+
+    if _AHV_PATTERN.search(result):
+        if warn:
+            warnings.warn(
+                "AHV/social security number detected in payload — auto-hashing",
+                UserWarning,
+                stacklevel=2,
+            )
+        result = _AHV_PATTERN.sub(_hash_match, result)
+
+    if _EMAIL_PATTERN.search(result):
+        if warn:
+            warnings.warn(
+                "Email address detected in payload — auto-hashing",
+                UserWarning,
+                stacklevel=2,
+            )
+        result = _EMAIL_PATTERN.sub(_hash_match, result)
+
+    if _SSN_PATTERN.search(result):
+        if warn:
+            warnings.warn(
+                "SSN detected in payload — auto-hashing",
+                UserWarning,
+                stacklevel=2,
+            )
+        result = _SSN_PATTERN.sub(_hash_match, result)
+
+    if _PHONE_PATTERN.search(result):
+        if warn:
+            warnings.warn(
+                "Phone number detected in payload — auto-hashing",
+                UserWarning,
+                stacklevel=2,
+            )
+        result = _PHONE_PATTERN.sub(_hash_match, result)
+
+    if _IP_PATTERN.search(result):
+        result = _IP_PATTERN.sub(_hash_match, result)
+
+    # Credit card: hash only Luhn-valid sequences
+    def _cc_hash(m: re.Match[str]) -> str:
+        digits = re.sub(r"[^\d]", "", m.group())
+        if len(digits) >= 13 and _luhn_check(digits):
+            if warn:
+                warnings.warn(
+                    "Credit card number detected in payload — auto-hashing",
+                    UserWarning,
+                    stacklevel=2,
+                )
+            return "sha256:" + hashlib.sha256(m.group().encode()).hexdigest()[:16]
+        return m.group()
+
+    result = _CC_PATTERN.sub(_cc_hash, result)
+
+    return result

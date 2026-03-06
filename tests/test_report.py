@@ -513,3 +513,227 @@ class TestCliReport:
         assert result.returncode == 0
         assert "report" in result.stdout
         assert "compliance" in result.stdout.lower()
+
+
+# ---------------------------------------------------------------------------
+# Edge-case tests (Phase 21 — security hardening)
+# ---------------------------------------------------------------------------
+
+
+class TestReportReproducibility:
+    """Same input data must produce identical reports (deterministic output)."""
+
+    def test_same_input_same_markdown(self) -> None:
+        """Two calls with identical stats/health produce identical Markdown."""
+        r1 = generate_report(
+            canister_id=CANISTER_ID,
+            format=ReportFormat.EU_AI_ACT,
+            stats=MOCK_STATS,
+            health=MOCK_HEALTH,
+        )
+        r2 = generate_report(
+            canister_id=CANISTER_ID,
+            format=ReportFormat.EU_AI_ACT,
+            stats=MOCK_STATS,
+            health=MOCK_HEALTH,
+        )
+        # generated_at may differ by a few ms, so strip it for comparison
+        md1 = "\n".join(
+            line for line in r1.markdown.splitlines()
+            if not line.startswith("**Generated:**")
+        )
+        md2 = "\n".join(
+            line for line in r2.markdown.splitlines()
+            if not line.startswith("**Generated:**")
+        )
+        assert md1 == md2
+
+    def test_all_formats_reproducible(self) -> None:
+        """All three report formats are deterministic."""
+        for fmt in ReportFormat:
+            r1 = generate_report(
+                canister_id=CANISTER_ID, format=fmt,
+                stats=MOCK_STATS, health=MOCK_HEALTH,
+            )
+            r2 = generate_report(
+                canister_id=CANISTER_ID, format=fmt,
+                stats=MOCK_STATS, health=MOCK_HEALTH,
+            )
+            strip = lambda md: "\n".join(
+                l for l in md.splitlines() if not l.startswith("**Generated:**")
+            )
+            assert strip(r1.markdown) == strip(r2.markdown), f"{fmt.value} not reproducible"
+
+
+class TestEuAiActArticleReferences:
+    """EU AI Act report must reference the correct articles for legal defensibility."""
+
+    def test_score_categories_reference_art_12(self) -> None:
+        """Compliance table criteria map to Art. 12 sub-articles."""
+        report = generate_report(
+            canister_id=CANISTER_ID,
+            format=ReportFormat.EU_AI_ACT,
+            stats=MOCK_STATS,
+            health=MOCK_HEALTH,
+        )
+        md = report.markdown
+        # Art. 12.1 — Automatic Logging
+        assert "Art. 12.1" in md
+        # Art. 12.2 — Traceability
+        assert "Art. 12.2" in md
+        # Art. 12.3 — Monitoring
+        assert "Art. 12.3" in md
+        # Art. 12.4 — Record Keeping
+        assert "Art. 12.4" in md
+
+    def test_verification_cli_command_present(self) -> None:
+        """Report includes the CLI verification command."""
+        report = generate_report(
+            canister_id=CANISTER_ID,
+            format=ReportFormat.EU_AI_ACT,
+            stats=MOCK_STATS,
+            health=MOCK_HEALTH,
+        )
+        assert f"aegis verify {CANISTER_ID}" in report.markdown
+
+
+class TestDegradedChainWarning:
+    """Broken/degraded chain must produce clear warnings in ALL report formats."""
+
+    def test_eu_ai_act_broken_chain_warning(self) -> None:
+        report = generate_report(
+            canister_id=CANISTER_ID,
+            format=ReportFormat.EU_AI_ACT,
+            stats=MOCK_STATS,
+            health=MOCK_BROKEN_HEALTH,
+        )
+        assert "BROKEN" in report.markdown
+        assert "[FAIL]" in report.markdown
+
+    def test_iso_42001_broken_chain_warning(self) -> None:
+        report = generate_report(
+            canister_id=CANISTER_ID,
+            format=ReportFormat.ISO_42001,
+            stats=MOCK_STATS,
+            health=MOCK_BROKEN_HEALTH,
+        )
+        assert "[FAIL]" in report.markdown
+        assert report.summary.chain_intact is False
+
+    def test_aiuc_1_broken_chain_compromised(self) -> None:
+        report = generate_report(
+            canister_id=CANISTER_ID,
+            format=ReportFormat.AIUC_1,
+            stats=MOCK_STATS,
+            health=MOCK_BROKEN_HEALTH,
+        )
+        assert "COMPROMISED" in report.markdown
+        assert "[FAIL]" in report.markdown
+
+
+# ---------------------------------------------------------------------------
+# generate_pdf() tests (Phase 21 — core function coverage)
+# ---------------------------------------------------------------------------
+
+
+class TestGeneratePdf:
+    """Tests for the PDF export function (generate_pdf)."""
+
+    def _make_report(self, fmt: ReportFormat = ReportFormat.EU_AI_ACT) -> ComplianceReport:
+        return generate_report(
+            canister_id=CANISTER_ID,
+            format=fmt,
+            stats=MOCK_STATS,
+            health=MOCK_HEALTH,
+        )
+
+    def test_pdf_creates_file(self, tmp_path: Path) -> None:
+        """PDF file is created and has reasonable size."""
+        from aegis.report import generate_pdf
+
+        report = self._make_report()
+        out = tmp_path / "test.pdf"
+        result_path = generate_pdf(report, str(out))
+        assert out.exists()
+        assert out.stat().st_size > 1000
+        assert result_path.endswith("test.pdf")
+
+    def test_pdf_all_three_formats(self, tmp_path: Path) -> None:
+        """All three report formats produce valid PDFs."""
+        from aegis.report import generate_pdf
+
+        for fmt in ReportFormat:
+            report = self._make_report(fmt)
+            out = tmp_path / f"report-{fmt.value}.pdf"
+            generate_pdf(report, str(out))
+            assert out.exists(), f"PDF not created for {fmt.value}"
+            assert out.stat().st_size > 500, f"PDF too small for {fmt.value}"
+
+    def test_pdf_contains_metadata(self, tmp_path: Path) -> None:
+        """PDF contains ISO 32000 metadata (title, author, creator)."""
+        from aegis.report import generate_pdf
+
+        report = self._make_report()
+        out = tmp_path / "meta.pdf"
+        generate_pdf(report, str(out))
+        raw = out.read_bytes()
+        # fpdf2 embeds metadata as PDF info dict entries
+        assert b"aegis-ledger-sdk" in raw
+        assert b"/Author" in raw
+        assert b"/Creator" in raw
+
+    def test_pdf_missing_fpdf2_import_error(self, tmp_path: Path) -> None:
+        """If fpdf2 is not installed, a helpful ImportError is raised."""
+        import sys
+        from unittest.mock import MagicMock
+
+        from aegis.report import generate_pdf
+
+        report = self._make_report()
+        # Temporarily remove fpdf from sys.modules
+        original = sys.modules.get("fpdf")
+        sys.modules["fpdf"] = None  # type: ignore[assignment]
+        try:
+            with pytest.raises(ImportError, match="fpdf2"):
+                generate_pdf(report, str(tmp_path / "fail.pdf"))
+        finally:
+            if original is not None:
+                sys.modules["fpdf"] = original
+            else:
+                sys.modules.pop("fpdf", None)
+
+    def test_pdf_creates_parent_dirs(self, tmp_path: Path) -> None:
+        """PDF export creates nested parent directories."""
+        from aegis.report import generate_pdf
+
+        report = self._make_report()
+        out = tmp_path / "deep" / "nested" / "dir" / "report.pdf"
+        generate_pdf(report, str(out))
+        assert out.exists()
+
+
+# ---------------------------------------------------------------------------
+# Format validation (Phase 21 R2)
+# ---------------------------------------------------------------------------
+
+
+class TestFormatValidation:
+    def test_invalid_format_type_raises(self) -> None:
+        """generate_report rejects non-ReportFormat values."""
+        with pytest.raises(ValueError, match="ReportFormat"):
+            generate_report(
+                canister_id=CANISTER_ID,
+                format="eu-ai-act",  # type: ignore[arg-type]
+                stats=MOCK_STATS,
+                health=MOCK_HEALTH,
+            )
+
+    def test_valid_format_accepted(self) -> None:
+        """generate_report accepts valid ReportFormat enum values."""
+        report = generate_report(
+            canister_id=CANISTER_ID,
+            format=ReportFormat.EU_AI_ACT,
+            stats=MOCK_STATS,
+            health=MOCK_HEALTH,
+        )
+        assert report.format == ReportFormat.EU_AI_ACT

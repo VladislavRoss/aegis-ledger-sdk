@@ -10,12 +10,17 @@ Voraussetzungen:
     - Internetzugang zu icp-api.io
     - /tmp/test_integration.pem existiert (wird im Test erzeugt)
 """
-import os
-import time
+import sys
+
 import pytest
 from pathlib import Path
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.serialization import Encoding, PrivateFormat, NoEncryption
+from unittest.mock import MagicMock
+
+# Skip entire module when ic-py is mocked (Windows WMI hang workaround)
+_ic_is_mock = isinstance(sys.modules.get("ic"), MagicMock)
+pytestmark = pytest.mark.skipif(_ic_is_mock, reason="ic-py is mocked (Windows)")
 
 CANISTER_ID = "toqqq-lqaaa-aaaae-afc2a-cai"
 PEM_PATH = Path("/tmp/aegis_e2e_test.pem")

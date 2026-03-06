@@ -208,6 +208,19 @@ class TestTiming:
         callback._elapsed("key")
         assert "key" not in callback._start_times
 
+    def test_elapsed_negative_clock_skew_returns_zero(
+        self, callback: AegisCrewCallback
+    ) -> None:
+        """If clock drifts backward (NTP), elapsed should clamp to 0."""
+        import time
+
+        # Set start time FAR in the future to simulate clock backward drift
+        future_ms = int(time.time() * 1000) + 999_999
+        with callback._times_lock:
+            callback._start_times["future_key"] = future_ms
+        result = callback._elapsed("future_key")
+        assert result == 0
+
     def test_task_timing_flows_to_decision(
         self, callback: AegisCrewCallback, mock_client: MagicMock
     ) -> None:

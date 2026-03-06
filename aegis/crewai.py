@@ -27,6 +27,7 @@ Usage:
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from typing import TYPE_CHECKING, Any
 
@@ -70,6 +71,7 @@ class AegisCrewCallback:
 
         # Track timing per task description (CrewAI does not expose UUIDs)
         self._start_times: dict[str, int] = {}
+        self._times_lock = threading.Lock()
 
     def __call__(self, step_output: Any) -> None:
         """
@@ -95,7 +97,8 @@ class AegisCrewCallback:
 
     def start_task(self, task_description: str) -> None:
         """Record the start time for a task. Call before crew.kickoff()."""
-        self._start_times[task_description] = int(time.time() * 1000)
+        with self._times_lock:
+            self._start_times[task_description] = int(time.time() * 1000)
 
     # ------------------------------------------------------------------
     # Handlers
@@ -173,20 +176,28 @@ class AegisCrewCallback:
 
     def log_error(self, error: Exception, context: str = "") -> None:
         """Log a CrewAI error to the Aegis Ledger."""
-        self._client.log_error(
-            tool="crewai",
-            input_data={"context": context[:_PREVIEW_MAX]},
-            error=error,
-            metadata={"framework": "crewai"},
-        )
+        try:
+            self._client.log_error(
+                tool="crewai",
+                input_data={"context": context[:_PREVIEW_MAX]},
+                error=error,
+                metadata={"framework": "crewai"},
+            )
+        except Exception:
+            logger.warning("Failed to log CrewAI error (secondary failure)", exc_info=True)
 
     # ------------------------------------------------------------------
     # Internal
     # ------------------------------------------------------------------
 
     def _elapsed(self, key: str) -> int:
-        """Calculate elapsed time in ms since task started."""
-        start = self._start_times.pop(key, None)
+        """Calculate elapsed time in ms since task started.
+
+        Returns 0 if no start time was recorded or if clock skew
+        produced a negative duration.
+        """
+        with self._times_lock:
+            start = self._start_times.pop(key, None)
         if start is None:
             return 0
-        return int(time.time() * 1000) - start
+        return max(0, int(time.time() * 1000) - start)
