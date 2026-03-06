@@ -61,7 +61,7 @@ from aegis.types import (
 
 logger = logging.getLogger("aegis")
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 F = TypeVar("F", bound=Callable[..., Any])
 
@@ -501,12 +501,12 @@ class AegisClient:
                 tool=entry.action.tool,
                 input_hash=entry.action.input_hash,
                 output_hash=entry.action.output_hash,
-                input_preview=entry.action.input_preview,
-                output_preview=entry.action.output_preview,
+                input_preview="",
+                output_preview="",
                 duration_ms=entry.action.duration_ms,
                 status=entry.action.status.value,
                 parent_action_id=entry.context.parent_action_id,
-                decision_reasoning=entry.context.decision_reasoning,
+                decision_reasoning="",
                 confidence_score=entry.context.confidence_score,
                 framework=entry.environment.framework,
                 model_id=entry.environment.model_id,
@@ -562,7 +562,7 @@ class AegisClient:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _derive_org_id(private_key_path: str | Path) -> str:
+    def _derive_org_id(private_key_path: "str | Path") -> str:
         """
         Derive the ICP principal from the agent's Ed25519 PEM key.
 

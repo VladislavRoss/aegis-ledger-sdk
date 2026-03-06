@@ -98,9 +98,7 @@ class LogEntry:
             "action": {
                 "duration_ms": self.action.duration_ms,
                 "input_hash": self.action.input_hash,
-                "input_preview": self.action.input_preview,
                 "output_hash": self.action.output_hash,
-                "output_preview": self.action.output_preview,
                 "status": self.action.status.value,
                 "tool": self.action.tool,
                 "type": self.action.type.value,
@@ -110,7 +108,6 @@ class LogEntry:
             "client_timestamp_ms": self.client_timestamp_ms,
             "context": {
                 "confidence_score": self.context.confidence_score,
-                "decision_reasoning": self.context.decision_reasoning,
                 "parent_action_id": self.context.parent_action_id,
             },
             "environment": {

@@ -4,7 +4,7 @@ import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 # Import from the package path used by the project
-from aegis.crypto import (
+from AEGIS_LEDGER.crypto import (
     canonical_json,
     compute_chain_hash,
     sha256_hex,
@@ -31,7 +31,7 @@ class TestCanonicalJson:
 
     def test_utf8_encoding(self):
         result = canonical_json({"name": "Zürich"})
-        assert "Zürich".encode() in result
+        assert "Zürich".encode("utf-8") in result
 
     def test_empty_dict(self):
         assert canonical_json({}) == b"{}"
@@ -135,3 +135,73 @@ class TestTruncatePreview:
 
     def test_none_returns_empty(self):
         assert truncate_preview(None) == ""
+
+
+class TestSignableDictNoToxicData:
+    """Verify that to_signable_dict() contains NO raw data fields (Phase 1 Toxic Data fix)."""
+
+    def _make_entry(self):
+        from AEGIS_LEDGER.types import (
+            ActionContext,
+            ActionPayload,
+            ActionStatus,
+            ActionType,
+            Environment,
+            LogEntry,
+        )
+
+        return LogEntry(
+            agent_id="test-agent",
+            session_id="test-session",
+            sequence_number=0,
+            action=ActionPayload(
+                type=ActionType.TOOL_CALL,
+                tool="search",
+                input_hash="sha256:abc123",
+                output_hash="sha256:def456",
+                input_preview='{"user_query":"My SSN is 123-45-6789"}',
+                output_preview='{"result":"sensitive data"}',
+                duration_ms=100,
+                status=ActionStatus.SUCCESS,
+            ),
+            context=ActionContext(
+                parent_action_id="",
+                decision_reasoning="User john@example.com requested a refund",
+                confidence_score=0.95,
+            ),
+            environment=Environment(framework="langchain"),
+            client_timestamp_ms=1234567890,
+            sdk_version="0.3.0",
+            api_key_id="ak_test",
+        )
+
+    def test_no_input_preview_in_signable_dict(self):
+        entry = self._make_entry()
+        signable = entry.to_signable_dict()
+        assert "input_preview" not in signable["action"]
+
+    def test_no_output_preview_in_signable_dict(self):
+        entry = self._make_entry()
+        signable = entry.to_signable_dict()
+        assert "output_preview" not in signable["action"]
+
+    def test_no_decision_reasoning_in_signable_dict(self):
+        entry = self._make_entry()
+        signable = entry.to_signable_dict()
+        assert "decision_reasoning" not in signable["context"]
+
+    def test_hashes_still_present(self):
+        entry = self._make_entry()
+        signable = entry.to_signable_dict()
+        assert signable["action"]["input_hash"] == "sha256:abc123"
+        assert signable["action"]["output_hash"] == "sha256:def456"
+
+    def test_canonical_json_has_no_pii(self):
+        entry = self._make_entry()
+        signable = entry.to_signable_dict()
+        payload = canonical_json(signable)
+        payload_str = payload.decode("utf-8")
+        assert "SSN" not in payload_str
+        assert "123-45-6789" not in payload_str
+        assert "john@example.com" not in payload_str
+        assert "sensitive data" not in payload_str

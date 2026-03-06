@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 
 from aegis.crypto import compute_chain_hash
 
+
 # ---------------------------------------------------------------------------
 # compute_chain_hash()
 # ---------------------------------------------------------------------------

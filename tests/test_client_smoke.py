@@ -154,9 +154,40 @@ def test_api_key_id_at_position_23():
     assert args_list[23]["value"] == "ak_test"
 
 
+def test_no_raw_data_sent_to_canister():
+    """Previews and reasoning must be empty strings — no PII on-chain (Phase 1 fix)."""
+    client, mock_transport = _make_client()
+    client.log_tool_call(
+        tool="search",
+        input_data={"user_query": "My SSN is 123-45-6789"},
+        output_data={"result": "sensitive medical data"},
+        duration_ms=100,
+    )
+
+    call_args = mock_transport.call_update.call_args
+    args_list = call_args[0][1]
+    # Position 9 = inputPreview, Position 10 = outputPreview
+    assert args_list[9]["value"] == "", f"inputPreview must be empty, got: {args_list[9]['value']}"
+    assert args_list[10]["value"] == "", f"outputPreview must be empty, got: {args_list[10]['value']}"
+    # Position 14 = decisionReasoning
+    assert args_list[14]["value"] == "", f"decisionReasoning must be empty, got: {args_list[14]['value']}"
+
+
+def test_decision_reasoning_not_sent_to_canister():
+    """log_decision() reasoning must not be sent to canister."""
+    client, mock_transport = _make_client()
+    client.log_decision(reasoning="User john@example.com requested refund", confidence=0.9)
+
+    call_args = mock_transport.call_update.call_args
+    args_list = call_args[0][1]
+    assert args_list[14]["value"] == "", f"decisionReasoning must be empty, got: {args_list[14]['value']}"
+
+
 def test_sequence_counter_thread_safe():
     """Sequence Counter muss unter concurrent access unique Werte liefern."""
     client, mock_transport = _make_client()
+    sequences: list[int] = []
+
     def log_one(_: int) -> None:
         mock_transport.call_update.return_value = {"actionId": "x"}
         client.log_tool_call(tool="t", input_data={}, output_data={}, duration_ms=0)

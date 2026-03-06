@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, call
 from uuid import uuid4
 
 import pytest
 
 from aegis.langchain import AegisCallbackHandler
 from aegis.types import ActionStatus
+
 
 # ---------------------------------------------------------------------------
 # Fixtures

@@ -1,6 +1,5 @@
 """Tests für transport.py Hilfsfunktionen."""
 import pytest
-
 from aegis.transport import _build_add_ledger_entry_args, action_type_to_candid_variant
 
 # --- action_type_to_candid_variant ---

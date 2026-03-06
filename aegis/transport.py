@@ -335,9 +335,19 @@ class CanisterTransport:
         failed: list[str] = []
         drained = 0
 
+        spill_ttl_ms = 30 * 24 * 60 * 60 * 1000  # 30 days
+        now_ms = int(time.time() * 1000)
+
         for line in lines:
             try:
                 entry = json.loads(line)
+
+                # TTL: discard entries older than 30 days
+                age_ms = now_ms - entry.get("timestamp_ms", 0)
+                if age_ms > spill_ttl_ms:
+                    logger.warning("Discarding spill entry older than 30 days (age=%dd)", age_ms // (24 * 60 * 60 * 1000))
+                    continue
+
                 method = entry.get("method", "")
                 if method not in _ALLOWED_SPILL_METHODS:
                     logger.error("Discarding spill entry with disallowed method %r", method)

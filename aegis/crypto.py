@@ -191,7 +191,10 @@ def truncate_preview(obj: object, max_length: int = 200) -> str:
     if obj is None:
         return ""
 
-    sensitive_keys = ("key", "secret", "token", "password", "auth", "credential")
+    sensitive_keys = (
+        "key", "secret", "token", "password", "auth", "credential",
+        "ssn", "dob", "birth", "phone", "address", "email",
+    )
     sensitive_str_prefixes = ("Bearer ", "-----BEGIN", "sk-", "eyJ")
 
     def _redact(d: object) -> object:

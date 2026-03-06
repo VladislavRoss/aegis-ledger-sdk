@@ -1,10 +1,11 @@
 """
-aegis.cli — Command-line utilities for Aegis SDK setup.
+aegis.cli -- Command-line utilities for Aegis SDK setup.
 
 Commands:
     aegis keygen ./my_agent_key.pem    Generate an Ed25519 keypair
     aegis verify <canister_id> <action_id>  Verify a single ledger entry
     aegis status <canister_id>          Check canister health
+    aegis report <canister_id>          Generate compliance report
 """
 
 from __future__ import annotations
@@ -28,6 +29,8 @@ def main() -> None:
         _cmd_verify(args[1:])
     elif command == "status":
         _cmd_status(args[1:])
+    elif command == "report":
+        _cmd_report(args[1:])
     elif command == "version":
         from aegis import __version__
 
@@ -41,17 +44,26 @@ def main() -> None:
 def _print_help() -> None:
     print(
         """
-aegis-ledger-sdk — Tamperproof execution ledger for AI agents
+aegis-ledger-sdk -- Tamperproof execution ledger for AI agents
 
 Commands:
-  keygen <path>                  Generate Ed25519 keypair for agent signing
+  keygen <path>                     Generate Ed25519 keypair for agent signing
   verify <canister_id> <action_id>  Verify a ledger entry's chain hash
-  status <canister_id>           Check canister health and chain stats
-  version                        Print SDK version
+  status <canister_id>              Check canister health and chain stats
+  report <canister_id> [--format F] Generate compliance report
+  version                           Print SDK version
+
+Report Formats:
+  eu-ai-act   EU AI Act Article 12 (default)
+  iso-42001   ISO/IEC 42001 AI Management System
+  aiuc-1      AIUC-1 Insurance Underwriting Criteria
+  all         Generate all formats
 
 Examples:
   aegis keygen ./keys/my_agent.pem
   aegis verify toqqq-lqaaa-aaaae-afc2a-cai act_a7f3b2c19e4d
+  aegis report toqqq-lqaaa-aaaae-afc2a-cai --format eu-ai-act
+  aegis report toqqq-lqaaa-aaaae-afc2a-cai --format all -o ./reports/
         """.strip()
     )
 
@@ -134,6 +146,69 @@ def _cmd_status(args: list[str]) -> None:
         print(f"  API keys:         {stats.get('active_api_keys', 'N/A')}")
         print(f"  Chain length:     {stats.get('chain_length', 'N/A')}")
         print(f"  Latest hash:      {stats.get('latest_chain_hash', 'N/A')[:16]}...")
+
+    except Exception as e:
+        print(f"Error: {e}")
+        sys.exit(1)
+
+
+def _cmd_report(args: list[str]) -> None:
+    """Generate compliance report."""
+    if not args:
+        print("Usage: aegis report <canister_id> [--format eu-ai-act|iso-42001|aiuc-1|all]")
+        print()
+        print("Options:")
+        print("  --format F   Report format (default: eu-ai-act)")
+        print("  -o PATH      Output file or directory (for --format all)")
+        sys.exit(1)
+
+    canister_id = args[0]
+    format_str = "eu-ai-act"
+    output_path = ""
+
+    if "--format" in args:
+        idx = args.index("--format")
+        if idx + 1 < len(args):
+            format_str = args[idx + 1]
+
+    if "-o" in args:
+        idx = args.index("-o")
+        if idx + 1 < len(args):
+            output_path = args[idx + 1]
+
+    try:
+        from aegis.report import ReportFormat, generate_all_reports, generate_report
+
+        valid_formats = {f.value for f in ReportFormat}
+
+        if format_str == "all":
+            reports = generate_all_reports(
+                canister_id=canister_id,
+                output_dir=output_path,
+            )
+            for r in reports:
+                print(f"--- {r.format.value} (score: {int(r.summary.compliance_score * 100)}%) ---")
+                if not output_path:
+                    print(r.markdown)
+                else:
+                    print(f"  Written to: {output_path}/aegis-{r.format.value}-report.md")
+                print()
+        elif format_str in valid_formats:
+            fmt = ReportFormat(format_str)
+            report = generate_report(
+                canister_id=canister_id,
+                format=fmt,
+                output_path=output_path,
+            )
+            if output_path:
+                print(f"Report written to: {output_path}")
+                print(f"Compliance score: {int(report.summary.compliance_score * 100)}%")
+            else:
+                print(report.markdown)
+        else:
+            print(f"Unknown format: {format_str}")
+            print(f"Valid formats: {', '.join(sorted(valid_formats))}, all")
+            sys.exit(1)
 
     except Exception as e:
         print(f"Error: {e}")

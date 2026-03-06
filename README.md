@@ -32,7 +32,7 @@ aegis keygen ./agent_key.pem
 from aegis import AegisClient
 
 client = AegisClient(
-    canister_id="toqqq-lqaaa-aaaae-afc2a-cai",  # From https://www.aegis-ledger.com/dashboard
+    canister_id="toqqq-lqaaa-aaaae-afc2a-cai",  # From dashboard
     api_key_id="ak_3f8a9b2c1d4e5f60",            # From dashboard
     private_key_path="./agent_key.pem",
     agent_id="agent_billing_v2",
@@ -56,7 +56,7 @@ def call_stripe(amount: int, currency: str) -> dict:
 ### 4. Or drop it into LangChain with zero config
 
 ```python
-from aegis.langchain import AegisCallbackHandler
+from aegis.integrations.langchain import AegisCallbackHandler
 
 handler = AegisCallbackHandler(client)
 

@@ -10,11 +10,12 @@ Voraussetzungen:
     - Internetzugang zu icp-api.io
     - /tmp/test_integration.pem existiert (wird im Test erzeugt)
 """
-from pathlib import Path
-
+import os
+import time
 import pytest
+from pathlib import Path
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-from cryptography.hazmat.primitives.serialization import Encoding, NoEncryption, PrivateFormat
+from cryptography.hazmat.primitives.serialization import Encoding, PrivateFormat, NoEncryption
 
 CANISTER_ID = "toqqq-lqaaa-aaaae-afc2a-cai"
 PEM_PATH = Path("/tmp/aegis_e2e_test.pem")
