@@ -30,7 +30,7 @@ from typing import Any
 
 logger = logging.getLogger("aegis.report")
 
-SDK_VERSION = "0.3.0"
+SDK_VERSION = "0.1.0"
 
 
 # ---------------------------------------------------------------------------
