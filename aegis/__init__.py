@@ -47,7 +47,7 @@ from aegis.types import (
     VerificationResult,
 )
 
-__version__ = "0.4.0"
+__version__ = "0.1.0"
 
 __all__ = [
     "AegisClient",
