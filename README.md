@@ -1,8 +1,8 @@
 # Aegis Ledger SDK
 
-**Tamperproof execution ledger for AI agents.**
+**Tamperproof audit logs for AI agents.**
 
-Every tool call, decision, and error your agent makes — cryptographically sealed, hash-chained, and independently verifiable. Built on the [Internet Computer](https://internetcomputer.org) for immutability that doesn't depend on trusting a database admin.
+When autonomous agents take actions, their logs become legal evidence. Aegis hash-chains every tool call, signs it with Ed25519, and stores it on the [Internet Computer](https://internetcomputer.org) — where no one can edit it. Not you, not your ops team, not the hosting provider.
 
 [![PyPI](https://img.shields.io/pypi/v/aegis-ledger-sdk)](https://pypi.org/project/aegis-ledger-sdk/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
@@ -11,73 +11,105 @@ Every tool call, decision, and error your agent makes — cryptographically seal
 pip install aegis-ledger-sdk
 ```
 
-## Why
+## The Problem
 
 Your AI agent just autonomously called a payment API, transferred $47,000, and the client says it wasn't authorized. Your logs are in CloudWatch. The client's lawyer asks: **"Can you prove these logs haven't been edited since the incident?"**
 
-You can't.
+You can't. Aegis fixes this.
 
-Aegis fixes this. Every action is append-only, hash-chained (each entry includes the cryptographic hash of the previous entry), and stored on tamperproof infrastructure. No one can alter them — not you, not your ops team, not the hosting provider.
-
-## Quickstart (5 minutes)
-
-### 1. Generate a signing key
-
-```bash
-aegis keygen ./agent_key.pem
-# → Private key: ./agent_key.pem
-# → Public key:  ./agent_key.pem.pub (register this in the dashboard)
-```
-
-### 2. Initialize the client
+## Quickstart
 
 ```python
 from aegis import AegisClient
 
 client = AegisClient(
-    canister_id="toqqq-lqaaa-aaaae-afc2a-cai",  # From https://www.aegis-ledger.com/dashboard
+    canister_id="toqqq-lqaaa-aaaae-afc2a-cai",  # From dashboard
     api_key_id="ak_3f8a9b2c1d4e5f60",            # From dashboard
-    private_key_path="./agent_key.pem",
+    private_key_path="./agent_key.pem",            # aegis keygen
     agent_id="agent_billing_v2",
 )
-```
 
-### 3. Add the `@trace` decorator to any function
-
-```python
 @client.trace()
 def call_stripe(amount: int, currency: str) -> dict:
     return stripe.PaymentIntent.create(amount=amount, currency=currency)
 
-# Every call is now tamperproof-logged with:
-#   - SHA-256 hashes of input and output
-#   - Wall-clock execution time
-#   - Ed25519 signature from your agent's key
-#   - Hash-chain link to the previous entry
+# Every call is now tamperproof-logged:
+#   SHA-256(input) + SHA-256(output) + Ed25519 signature + hash-chain link
 ```
 
-### 4. Or drop it into your framework
+Verify any entry — no authentication required:
+
+```bash
+aegis verify toqqq-lqaaa-aaaae-afc2a-cai act_a7f3b2c19e4d
+# VERIFIED — chain hash valid, signature valid
+```
+
+## Framework Integrations
+
+### LangChain
 
 ```python
-# LangChain
 from aegis.langchain import AegisCallbackHandler
+
 handler = AegisCallbackHandler(client)
 agent.invoke({"input": "Process refund"}, config={"callbacks": [handler]})
-
-# CrewAI
-from aegis.crewai import aegis_step_callback
-crew = Crew(agents=[...], tasks=[...], step_callback=aegis_step_callback(client))
-
-# OpenAI Agents SDK
-from aegis.openai_agents import AegisTracingProcessor
-processor = AegisTracingProcessor(client)
-
-# AutoGen / AG2
-from aegis.autogen import AegisAutoGenHook
-hook = AegisAutoGenHook(client)
 ```
 
-## How it works
+### CrewAI
+
+```python
+from aegis.crewai import aegis_step_callback
+
+crew = Crew(agents=[...], tasks=[...], step_callback=aegis_step_callback(client))
+```
+
+### OpenAI Agents SDK
+
+```python
+from aegis.openai_agents import AegisTracingProcessor
+
+processor = AegisTracingProcessor(client)
+# Automatically traces all agent runs
+```
+
+### AutoGen / AG2
+
+```python
+from aegis.autogen import AegisAutoGenHook
+
+hook = AegisAutoGenHook(client)
+# Hook into AutoGen message flow
+```
+
+## Async & Batch Support
+
+```python
+# Async functions work directly with @trace
+@client.trace()
+async def fetch_data(url: str) -> dict:
+    async with aiohttp.ClientSession() as session:
+        resp = await session.get(url)
+        return await resp.json()
+
+# Batch-log multiple entries with correct hash-chaining
+client.log_batch([
+    {"tool": "search", "status": "ok", "input_data": "query"},
+    {"tool": "summarize", "status": "ok", "input_data": "results"},
+])
+```
+
+## PII Protection
+
+PII is automatically detected and redacted before transmission (enabled by default):
+
+```python
+client = AegisClient(..., redact_pii=True)  # default
+
+# Detected patterns: email, phone, IP, SSN, AHV (Swiss), credit cards
+# PII is replaced with sha256:<128-bit hash> — verifiable but not reversible
+```
+
+## How It Works
 
 ```
 Your Agent                    Aegis SDK                    ICP Canister
@@ -98,22 +130,12 @@ Your Agent                    Aegis SDK                    ICP Canister
 Fail-open: if canister unreachable, entries buffer locally and retry.
 ```
 
-## Verification
-
-Anyone can verify a ledger entry's integrity — no authentication required:
-
-```bash
-aegis verify toqqq-lqaaa-aaaae-afc2a-cai act_a7f3b2c19e4d
-# VERIFIED — chain hash valid, signature valid
-```
-
-## What gets logged
+## What Gets Logged
 
 | Field | Description |
 |-------|-------------|
 | `input_hash` | SHA-256 of full input (raw data never stored on-chain) |
 | `output_hash` | SHA-256 of full output |
-| `input_preview` | Truncated, auto-redacted preview (secrets masked) |
 | `tool` | Tool/API name |
 | `duration_ms` | Wall-clock execution time |
 | `chain_hash` | SHA-256 linking to previous entry |
@@ -122,64 +144,24 @@ aegis verify toqqq-lqaaa-aaaae-afc2a-cai act_a7f3b2c19e4d
 
 **What does NOT get logged:** Raw payloads, API keys, secrets, PII. Only hashes — you control your data.
 
-## PII Detection & Redaction
+## Compliance
 
-The SDK automatically detects and redacts sensitive data in previews:
-
-- Swiss AHV numbers (756-prefix + Luhn validation)
-- Credit card numbers (13-19 digits + Luhn validation)
-- Social Security Numbers, Email addresses, Phone numbers, IP addresses
-
-Each redacted value is replaced with a deterministic `sha256:<16hex>` token.
-
-## Compliance Reports
-
-Generate compliance reports for regulatory frameworks:
+Generate court-admissible compliance reports:
 
 ```python
 from aegis.report import generate_report, generate_pdf, ReportFormat
 
-report = generate_report(
-    "toqqq-lqaaa-aaaae-afc2a-cai",
-    format=ReportFormat.EU_AI_ACT,
-    stats=stats,
-    health=health,
-)
+report = generate_report("toqqq-...", format=ReportFormat.EU_AI_ACT, stats=stats, health=health)
 generate_pdf(report, "compliance-report.pdf")
 ```
 
 Supported frameworks: **EU AI Act Art. 12**, **ISO/IEC 42001**, **AIUC-1** (insurance underwriting).
-
-## eIDAS Timestamps
-
-Attach RFC 3161 qualified timestamps from EU-certified TSAs:
-
-```python
-from aegis.timestamp import TimestampAuthority
-
-tsa = TimestampAuthority()
-token = tsa.timestamp(hash_bytes)
-```
-
-## Install options
-
-```bash
-pip install aegis-ledger-sdk                     # core only
-pip install "aegis-ledger-sdk[icp]"              # + ICP transport
-pip install "aegis-ledger-sdk[langchain]"         # + LangChain
-pip install "aegis-ledger-sdk[crewai]"            # + CrewAI
-pip install "aegis-ledger-sdk[openai-agents]"     # + OpenAI Agents SDK
-pip install "aegis-ledger-sdk[autogen]"           # + AutoGen/AG2
-pip install "aegis-ledger-sdk[pdf]"               # + PDF report generation
-pip install "aegis-ledger-sdk[all]"               # everything
-```
 
 ## Links
 
 - [Dashboard](https://www.aegis-ledger.com)
 - [Documentation](https://www.aegis-ledger.com/docs)
 - [GitHub](https://github.com/VladislavRoss/aegis-ledger-sdk)
-- [PyPI](https://pypi.org/project/aegis-ledger-sdk/)
 
 Normal logging = trust the system. **Aegis = verify the record.**
 
