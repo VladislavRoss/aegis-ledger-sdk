@@ -2,8 +2,7 @@
 E2E-Integration-Test gegen live Mainnet Canister.
 
 Aufruf:
-    cd /c/ARBEIT/AegisProtocol
-    python -m pytest AEGIS_LEDGER/tests/test_e2e_live.py -v -s
+    python -m pytest tests/test_e2e_live.py -v -s
 
 Voraussetzungen:
     - ic-py installiert (pip install ic-py)

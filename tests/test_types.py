@@ -65,7 +65,7 @@ class TestLogEntrySignableDict:
             ),
             metadata={"team": "billing", "env": "prod"},
             client_timestamp_ms=1700000000000,
-            sdk_version="0.3.0",
+            sdk_version="0.1.0",
             api_key_id="ak_test",
             payload_signature="ed25519:abc123",
         )
@@ -95,7 +95,7 @@ class TestLogEntrySignableDict:
         assert signable["action"]["type"] == "tool_call"
         assert signable["context"]["confidence_score"] == 0.85
         assert signable["environment"]["framework"] == "langchain"
-        assert signable["sdk_version"] == "0.3.0"
+        assert signable["sdk_version"] == "0.1.0"
         assert signable["api_key_id"] == "ak_test"
 
     def test_submission_dict_includes_signature(self) -> None:
