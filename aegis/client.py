@@ -61,7 +61,7 @@ from aegis.types import (
 
 logger = logging.getLogger("aegis")
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 F = TypeVar("F", bound=Callable[..., Any])
 
@@ -310,53 +310,66 @@ class AegisClient:
             action_type = ActionType(action_type)
 
         def decorator(func: F) -> F:
-            if inspect.iscoroutinefunction(func):
-                raise TypeError(
-                    f"@trace does not support async functions. "
-                    f"Use explicit log_* methods for async code. "
-                    f"Got coroutine function: {func.__qualname__!r}"
-                )
             resolved_tool = tool_name or func.__qualname__
+
+            def _build_input(func_: Any, args: Any, kwargs: Any) -> dict[str, Any]:
+                sig = inspect.signature(func_)
+                bound = sig.bind(*args, **kwargs)
+                bound.apply_defaults()
+                return dict(bound.arguments)
+
+            def _log_success(
+                input_data: dict[str, Any], result: Any, elapsed: int,
+            ) -> None:
+                output_data = result if capture_output else {}
+                self._log(
+                    action_type=action_type,
+                    tool=resolved_tool,
+                    input_data=input_data,
+                    output_data=output_data,
+                    duration_ms=elapsed,
+                    status=ActionStatus.SUCCESS,
+                    reasoning="",
+                    confidence=0.0,
+                    metadata=metadata,
+                )
+
+            def _log_failure(
+                input_data: dict[str, Any], error: Exception, elapsed: int,
+            ) -> None:
+                self.log_error(
+                    tool=resolved_tool,
+                    input_data=input_data,
+                    error=error,
+                    duration_ms=elapsed,
+                    metadata=metadata,
+                )
+
+            if inspect.iscoroutinefunction(func):
+                @functools.wraps(func)
+                async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
+                    input_data = _build_input(func, args, kwargs)
+                    start_ms = int(time.time() * 1000)
+                    try:
+                        result = await func(*args, **kwargs)
+                        _log_success(input_data, result, int(time.time() * 1000) - start_ms)
+                        return result
+                    except Exception as e:
+                        _log_failure(input_data, e, int(time.time() * 1000) - start_ms)
+                        raise
+
+                return async_wrapper  # type: ignore[return-value]
 
             @functools.wraps(func)
             def wrapper(*args: Any, **kwargs: Any) -> Any:
-                # Build input from function arguments
-                sig = inspect.signature(func)
-                bound = sig.bind(*args, **kwargs)
-                bound.apply_defaults()
-                input_data = dict(bound.arguments)
-
+                input_data = _build_input(func, args, kwargs)
                 start_ms = int(time.time() * 1000)
-
                 try:
                     result = func(*args, **kwargs)
-                    elapsed = int(time.time() * 1000) - start_ms
-
-                    output_data = result if capture_output else {}
-
-                    self._log(
-                        action_type=action_type,
-                        tool=resolved_tool,
-                        input_data=input_data,
-                        output_data=output_data,
-                        duration_ms=elapsed,
-                        status=ActionStatus.SUCCESS,
-                        reasoning="",
-                        confidence=0.0,
-                        metadata=metadata,
-                    )
-
+                    _log_success(input_data, result, int(time.time() * 1000) - start_ms)
                     return result
-
                 except Exception as e:
-                    elapsed = int(time.time() * 1000) - start_ms
-                    self.log_error(
-                        tool=resolved_tool,
-                        input_data=input_data,
-                        error=e,
-                        duration_ms=elapsed,
-                        metadata=metadata,
-                    )
+                    _log_failure(input_data, e, int(time.time() * 1000) - start_ms)
                     raise  # Always re-raise — we observe, never interfere
 
             return wrapper  # type: ignore[return-value]
@@ -439,6 +452,33 @@ class AegisClient:
     def flush(self) -> int:
         """Manually drain the spill buffer. Returns count of drained entries."""
         return self._transport.drain_spill_buffer()
+
+    def log_batch(self, entries: list[dict[str, Any]]) -> list[str]:
+        """
+        Log multiple entries sequentially, returning a list of action_ids.
+
+        Each entry dict should contain keyword arguments matching _log:
+        action_type, tool, input_data, output_data, duration_ms, status,
+        reasoning, confidence, metadata.
+
+        Entries are logged atomically one-by-one (each acquires the lock),
+        guaranteeing monotonic sequence numbers and correct hash-chaining.
+        """
+        results: list[str] = []
+        for entry in entries:
+            action_id = self._log(
+                action_type=ActionType(entry.get("action_type", "tool_call")),
+                tool=entry.get("tool", "batch"),
+                input_data=entry.get("input_data", {}),
+                output_data=entry.get("output_data", {}),
+                duration_ms=entry.get("duration_ms", 0),
+                status=ActionStatus(entry.get("status", "success")),
+                reasoning=entry.get("reasoning", ""),
+                confidence=entry.get("confidence", 0.0),
+                metadata=entry.get("metadata"),
+            )
+            results.append(action_id)
+        return results
 
     def close(self) -> None:
         """Drain spill buffer and release resources."""

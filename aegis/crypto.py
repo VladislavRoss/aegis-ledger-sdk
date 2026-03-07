@@ -300,7 +300,7 @@ def redact_pii(text: str, warn: bool = True) -> str:
     result = text
 
     def _hash_match(m: re.Match[str]) -> str:
-        return "sha256:" + hashlib.sha256(m.group().encode()).hexdigest()[:16]
+        return "sha256:" + hashlib.sha256(m.group().encode()).hexdigest()[:32]
 
     if _AHV_PATTERN.search(result):
         if warn:
@@ -351,7 +351,7 @@ def redact_pii(text: str, warn: bool = True) -> str:
                     UserWarning,
                     stacklevel=2,
                 )
-            return "sha256:" + hashlib.sha256(m.group().encode()).hexdigest()[:16]
+            return "sha256:" + hashlib.sha256(m.group().encode()).hexdigest()[:32]
         return m.group()
 
     result = _CC_PATTERN.sub(_cc_hash, result)
