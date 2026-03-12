@@ -1,8 +1,8 @@
 # Aegis Ledger SDK
 
-**Tamperproof audit logs for AI agents.**
+**Tamper-evident audit logs for AI agents.**
 
-When autonomous agents take actions, their logs become legal evidence. Aegis hash-chains every tool call, signs it with Ed25519, and stores it on the [Internet Computer](https://internetcomputer.org) — where no one can edit it. Not you, not your ops team, not the hosting provider.
+When autonomous agents take actions, their logs become verifiable audit evidence. Aegis hash-chains every tool call, signs it with Ed25519, and stores it on the [Internet Computer](https://internetcomputer.org) — where tampering is cryptographically detectable. Not you, not your ops team, not the hosting provider can silently alter an entry.
 
 [![PyPI](https://img.shields.io/pypi/v/aegis-ledger-sdk)](https://pypi.org/project/aegis-ledger-sdk/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
@@ -33,7 +33,7 @@ client = AegisClient(
 def call_stripe(amount: int, currency: str) -> dict:
     return stripe.PaymentIntent.create(amount=amount, currency=currency)
 
-# Every call is now tamperproof-logged:
+# Every call is now tamper-evident-logged:
 #   SHA-256(input) + SHA-256(output) + Ed25519 signature + hash-chain link
 ```
 
@@ -121,9 +121,10 @@ Your Agent                    Aegis SDK                    ICP Canister
     |                             |                    verify signature
     |                             |                    check sequence
     |                             |                    chain_hash = SHA-256(
-    |                             |                      prev_hash + payload
+    |                             |                      prev_hash + ":" +
+    |                             |                      canonical_json(entry)
     |                             |                    )
-    |                             |                    store immutably
+    |                             |                    store on-chain
     |                             |<-- action_id ---------------|
     |<-- return result -----------|                             |
 
@@ -146,7 +147,7 @@ Fail-open: if canister unreachable, entries buffer locally and retry.
 
 ## Compliance
 
-Generate court-admissible compliance reports:
+Generate verifiable compliance reports:
 
 ```python
 from aegis.report import generate_report, generate_pdf, ReportFormat
@@ -159,7 +160,7 @@ Supported frameworks: **EU AI Act Art. 12**, **ISO/IEC 42001**, **AIUC-1** (insu
 
 ## Links
 
-- [Dashboard](https://www.aegis-ledger.com)
+- [Dashboard](https://www.aegis-ledger.com/dashboard)
 - [Documentation](https://www.aegis-ledger.com/docs)
 - [GitHub](https://github.com/VladislavRoss/aegis-ledger-sdk)
 
