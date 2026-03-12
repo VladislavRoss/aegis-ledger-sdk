@@ -3,14 +3,12 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from unittest.mock import MagicMock, call
+from unittest.mock import MagicMock
 from uuid import uuid4
 
 import pytest
-
 from aegis.langchain import AegisCallbackHandler
 from aegis.types import ActionStatus
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -338,3 +336,48 @@ class TestTimingIntegration:
         handler.on_tool_end("a", run_id=r1, name="t1")
         assert r1 not in handler._start_times
         assert r2 in handler._start_times
+
+
+# ---------------------------------------------------------------------------
+# H-1: Memory leak eviction
+# ---------------------------------------------------------------------------
+
+
+class TestMemoryLeakEviction:
+    def test_eviction_does_not_trigger_below_threshold(self, handler):
+        """_evict_stale_timers should be a no-op below _MAX_PENDING_TIMERS."""
+        for _i in range(100):
+            handler.on_llm_start({}, ["p"], run_id=uuid4())
+        assert len(handler._start_times) == 100
+
+    def test_eviction_removes_stale_entries(self, handler):
+        """Entries older than 1h must be evicted when dict exceeds threshold."""
+        from aegis.langchain import _MAX_PENDING_TIMERS, _TIMER_TTL_MS
+
+        now = int(__import__("time").time() * 1000)
+        # Fill with stale entries (2 hours old)
+        for _i in range(_MAX_PENDING_TIMERS + 100):
+            handler._start_times[uuid4()] = now - _TIMER_TTL_MS - 1000
+
+        # Add one fresh entry which triggers eviction
+        fresh_id = uuid4()
+        handler.on_llm_start({}, ["p"], run_id=fresh_id)
+
+        # Stale entries should be evicted, fresh one should remain
+        assert fresh_id in handler._start_times
+        assert len(handler._start_times) <= 200  # most stale evicted
+
+    def test_fresh_entries_survive_eviction(self, handler):
+        """Fresh entries must NOT be evicted even above threshold."""
+        from aegis.langchain import _MAX_PENDING_TIMERS
+
+        now = int(__import__("time").time() * 1000)
+        # All entries are fresh (within last minute)
+        for _i in range(_MAX_PENDING_TIMERS + 50):
+            handler._start_times[uuid4()] = now - 1000
+
+        fresh_id = uuid4()
+        handler.on_tool_start({}, "x", run_id=fresh_id)
+
+        # All entries are fresh, so none should be evicted
+        assert len(handler._start_times) == _MAX_PENDING_TIMERS + 51

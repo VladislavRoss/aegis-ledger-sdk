@@ -6,10 +6,9 @@ import time
 from unittest.mock import MagicMock, patch
 
 import pytest
+from aegis.types import Environment
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.serialization import Encoding, NoEncryption, PrivateFormat
-
-from aegis.types import Environment
 
 
 @pytest.fixture

@@ -2,7 +2,8 @@
 E2E-Integration-Test gegen live Mainnet Canister.
 
 Aufruf:
-    python -m pytest tests/test_e2e_live.py -v -s
+    cd /c/ARBEIT/AegisProtocol
+    python -m pytest AEGIS_LEDGER/tests/test_e2e_live.py -v -s
 
 Voraussetzungen:
     - ic-py installiert (pip install ic-py)
@@ -10,12 +11,12 @@ Voraussetzungen:
     - /tmp/test_integration.pem existiert (wird im Test erzeugt)
 """
 import sys
+from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
-from pathlib import Path
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-from cryptography.hazmat.primitives.serialization import Encoding, PrivateFormat, NoEncryption
-from unittest.mock import MagicMock
+from cryptography.hazmat.primitives.serialization import Encoding, NoEncryption, PrivateFormat
 
 # Skip entire module when ic-py is mocked (Windows WMI hang workaround)
 _ic_is_mock = isinstance(sys.modules.get("ic"), MagicMock)

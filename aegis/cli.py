@@ -31,6 +31,8 @@ def main() -> None:
         _cmd_status(args[1:])
     elif command == "report":
         _cmd_report(args[1:])
+    elif command == "migrate":
+        _cmd_migrate(args[1:])
     elif command == "version":
         from aegis import __version__
 
@@ -44,14 +46,21 @@ def main() -> None:
 def _print_help() -> None:
     print(
         """
-aegis-ledger-sdk -- Tamperproof execution ledger for AI agents
+aegis-ledger-sdk -- Tamper-evident execution ledger for AI agents
 
 Commands:
-  keygen <path>                     Generate Ed25519 keypair for agent signing
+  keygen <path> [--algorithm ALG]   Generate keypair for agent signing
   verify <canister_id> <action_id>  Verify a ledger entry's chain hash
   status <canister_id>              Check canister health and chain stats
   report <canister_id> [--format F] Generate compliance report
+  migrate [options]                 Re-sign entries with a new algorithm
   version                           Print SDK version
+
+Algorithms (keygen):
+  ed25519       Ed25519 (default, classical)
+  ml-dsa-65     ML-DSA-65 / FIPS 204 (post-quantum, requires pqcrypto)
+  slh-dsa-128s  SLH-DSA-SHAKE-128s / FIPS 205 (hash-based PQ fallback)
+  hybrid        Ed25519 + ML-DSA-65 combined (requires pqcrypto)
 
 Report Formats:
   eu-ai-act   EU AI Act Article 12 (default)
@@ -61,6 +70,9 @@ Report Formats:
 
 Examples:
   aegis keygen ./keys/my_agent.pem
+  aegis keygen ./keys/my_agent.mldsa65 --algorithm ml-dsa-65
+  aegis keygen ./keys/my_agent.slh --algorithm slh-dsa-128s
+  aegis keygen ./keys/my_agent --algorithm hybrid
   aegis verify toqqq-lqaaa-aaaae-afc2a-cai act_a7f3b2c19e4d
   aegis report toqqq-lqaaa-aaaae-afc2a-cai --format eu-ai-act
   aegis report toqqq-lqaaa-aaaae-afc2a-cai --format all -o ./reports/
@@ -69,33 +81,78 @@ Examples:
 
 
 def _cmd_keygen(args: list[str]) -> None:
-    """Generate an Ed25519 keypair."""
+    """Generate a keypair (Ed25519, ML-DSA-65, or Hybrid)."""
     if not args:
-        print("Usage: aegis keygen <output_path>")
+        print("Usage: aegis keygen <output_path> [--algorithm ed25519|ml-dsa-65|hybrid]")
         print("Example: aegis keygen ./agent_key.pem")
+        print("Example: aegis keygen ./agent_key.mldsa65 --algorithm ml-dsa-65")
+        print("Example: aegis keygen ./agent --algorithm hybrid")
         sys.exit(1)
 
-    from aegis.crypto import generate_keypair
-
+    algorithm = "ed25519"
     path = args[0]
+
+    if "--algorithm" in args:
+        idx = args.index("--algorithm")
+        if idx + 1 < len(args):
+            algorithm = args[idx + 1]
+            if algorithm not in ("ed25519", "ml-dsa-65", "slh-dsa-128s", "hybrid"):
+                print(
+                    f"Error: Unknown algorithm '{algorithm}'. "
+                    "Use 'ed25519', 'ml-dsa-65', 'slh-dsa-128s', or 'hybrid'."
+                )
+                sys.exit(1)
+
     try:
-        _, pub_hex = generate_keypair(path)
+        if algorithm == "hybrid":
+            from aegis.crypto import generate_hybrid_keypair
+
+            _, _, pub_hex = generate_hybrid_keypair(path)
+            print("✓ Algorithm:            Hybrid (Ed25519 + ML-DSA-65)")
+            print(f"✓ Ed25519 key:          {path}.pem")
+            print(f"✓ ML-DSA-65 key:        {path}.mldsa65")
+            print(f"✓ Combined public key:  {path}.hybrid.pub")
+            print(f"✓ Public key (hex):     {pub_hex[:32]}...{pub_hex[-32:]}")
+            print(f"✓ Public key length:    {len(pub_hex)} hex chars (3968)")
+        elif algorithm == "slh-dsa-128s":
+            from aegis.crypto import generate_slhdsa128s_keypair
+
+            _, pub_hex = generate_slhdsa128s_keypair(path)
+            print("✓ Algorithm:            SLH-DSA-SHAKE-128s (FIPS 205, hash-based PQ)")
+            print(f"✓ Private key saved to: {path}")
+            print(f"✓ Public key saved to:  {path}.pub")
+            print(f"✓ Public key (hex):     {pub_hex}")
+        elif algorithm == "ml-dsa-65":
+            from aegis.crypto import generate_mldsa65_keypair
+
+            _, pub_hex = generate_mldsa65_keypair(path)
+            print("✓ Algorithm:            ML-DSA-65 (FIPS 204, post-quantum)")
+            print(f"✓ Private key saved to: {path}")
+            print(f"✓ Public key saved to:  {path}.pub")
+            print(f"✓ Public key (hex):     {pub_hex[:32]}...{pub_hex[-32:]}")
+        else:
+            from aegis.crypto import generate_keypair
+
+            _, pub_hex = generate_keypair(path)
+            print("✓ Algorithm:            Ed25519 (classical)")
+            print(f"✓ Private key saved to: {path}")
+            print(f"✓ Public key saved to:  {path}.pub")
+            print(f"✓ Public key (hex):     {pub_hex}")
     except FileExistsError as e:
         print(f"Error: {e}")
         sys.exit(1)
-
-    print(f"✓ Private key saved to: {path}")
-    print(f"✓ Public key saved to:  {path}.pub")
-    print(f"✓ Public key (hex):     {pub_hex}")
+    except ImportError as e:
+        print(f"Error: {e}")
+        sys.exit(1)
     print()
     print("Next steps:")
-    print("  1. Register this public key in the Aegis dashboard")
-    print("  2. Use the private key path in your AegisClient config")
-    print(f"  3. NEVER commit {path} to version control")
+    print("  1. Register the public key in the Aegis dashboard")
+    print("  2. Use the key path(s) in your AegisClient config")
+    print(f"  3. NEVER commit {path}* to version control")
 
 
 def _cmd_verify(args: list[str]) -> None:
-    """Verify a ledger entry."""
+    """Verify a ledger entry via on-chain verifyEntry query."""
     if len(args) < 2:
         print("Usage: aegis verify <canister_id> <action_id>")
         sys.exit(1)
@@ -104,19 +161,24 @@ def _cmd_verify(args: list[str]) -> None:
 
     try:
         from aegis.transport import CanisterTransport, TransportConfig
+        from ic.candid import Types  # type: ignore[import-untyped]
 
         config = TransportConfig(canister_id=canister_id)
         transport = CanisterTransport(config)
-        result = transport.call_query("verify_entry", [{"action_id": action_id}])
+        result = transport.call_query(
+            "verifyEntry", [{"type": Types.Text, "value": action_id}]
+        )
 
-        if result.get("valid"):
+        if result.get("isValid"):
             print(f"✓ VERIFIED — Entry {action_id} chain hash is valid")
-            print(f"  Hash:     {result.get('computed_hash', 'N/A')}")
-            print(f"  Previous: {result.get('previous_hash', 'N/A')}")
+            print(f"  Chain hash: {result.get('storedChainHash', 'N/A')}")
+            print(f"  Previous:   {result.get('previousChainHash', 'N/A')}")
+            print(f"  Sequence:   {result.get('sequenceNumber', 'N/A')}")
         else:
-            print(f"✗ INVALID — Entry {action_id} chain hash mismatch!")
-            print(f"  Stored:   {result.get('stored_hash', 'N/A')}")
-            print(f"  Computed: {result.get('computed_hash', 'N/A')}")
+            print(f"✗ INVALID — Entry {action_id}")
+            msg = result.get("message", "unknown reason")
+            print(f"  Reason:     {msg}")
+            print(f"  Chain hash: {result.get('storedChainHash', 'N/A')}")
             sys.exit(2)
 
     except Exception as e:
@@ -125,7 +187,7 @@ def _cmd_verify(args: list[str]) -> None:
 
 
 def _cmd_status(args: list[str]) -> None:
-    """Check canister health."""
+    """Check canister health via on-chain getHealth query."""
     if not args:
         print("Usage: aegis status <canister_id>")
         sys.exit(1)
@@ -137,15 +199,17 @@ def _cmd_status(args: list[str]) -> None:
 
         config = TransportConfig(canister_id=canister_id)
         transport = CanisterTransport(config)
-        stats = transport.call_query("get_org_stats", [{}])
+        health = transport.call_query("getHealth", [])
 
         print(f"Aegis Canister: {canister_id}")
-        print(f"  Total actions:    {stats.get('total_actions', 'N/A')}")
-        print(f"  Active agents:    {stats.get('total_agents', 'N/A')}")
-        print(f"  Sessions:         {stats.get('total_sessions', 'N/A')}")
-        print(f"  API keys:         {stats.get('active_api_keys', 'N/A')}")
-        print(f"  Chain length:     {stats.get('chain_length', 'N/A')}")
-        print(f"  Latest hash:      {stats.get('latest_chain_hash', 'N/A')[:16]}...")
+        print(f"  Total entries:    {health.get('totalEntries', 'N/A')}")
+        print(f"  API keys:         {health.get('totalKeys', 'N/A')}")
+        print(f"  Organizations:    {health.get('totalOrgs', 'N/A')}")
+        print(f"  Heap bytes:       {health.get('heapBytes', 'N/A')}")
+        print(f"  Cycles balance:   {health.get('cyclesBalance', 'N/A')}")
+        deferred = health.get("deferredVerifications", 0)
+        if deferred:
+            print(f"  Deferred verif.:  {deferred}")
 
     except Exception as e:
         print(f"Error: {e}")
@@ -209,6 +273,77 @@ def _cmd_report(args: list[str]) -> None:
             print(f"Unknown format: {format_str}")
             print(f"Valid formats: {', '.join(sorted(valid_formats))}, all")
             sys.exit(1)
+
+    except Exception as e:
+        print(f"Error: {e}")
+        sys.exit(1)
+
+
+def _cmd_migrate(args: list[str]) -> None:
+    """Re-sign entries from a canister session with a new algorithm."""
+    if not args or args[0] in ("-h", "--help"):
+        print(
+            """
+Usage: aegis migrate <canister_id> <session_id> [options]
+
+Re-sign ledger entries with a different signature algorithm,
+producing a migration proof JSON file.
+
+Options:
+  --to ALG            Target algorithm (ml-dsa-65, slh-dsa-128s, hybrid)
+  --pem PATH          Ed25519 PEM key (for hybrid)
+  --signing-key PATH  PQ secret key file
+  -o PATH             Output file (default: migration_<session>.json)
+
+Examples:
+  aegis migrate toqqq-... sess_abc --to hybrid --pem ./key.pem --signing-key ./key.mldsa65
+  aegis migrate toqqq-... sess_abc --to slh-dsa-128s --signing-key ./key.slh
+            """.strip()
+        )
+        sys.exit(0)
+
+    if len(args) < 2:
+        print("Error: canister_id and session_id required.")
+        sys.exit(1)
+
+    canister_id, session_id = args[0], args[1]
+    target_algo = "hybrid"
+    pem_path = ""
+    signing_key_path = ""
+    output_path = ""
+
+    i = 2
+    while i < len(args):
+        if args[i] == "--to" and i + 1 < len(args):
+            target_algo = args[i + 1]
+            i += 2
+        elif args[i] == "--pem" and i + 1 < len(args):
+            pem_path = args[i + 1]
+            i += 2
+        elif args[i] == "--signing-key" and i + 1 < len(args):
+            signing_key_path = args[i + 1]
+            i += 2
+        elif args[i] == "-o" and i + 1 < len(args):
+            output_path = args[i + 1]
+            i += 2
+        else:
+            i += 1
+
+    try:
+        from aegis.migrate import migrate_session
+
+        report = migrate_session(
+            canister_id=canister_id,
+            session_id=session_id,
+            target_algorithm=target_algo,
+            pem_path=pem_path or None,
+            signing_key_path=signing_key_path or None,
+            output_path=output_path or None,
+        )
+
+        print(f"Migration complete: {report['total_entries']} entries re-signed")
+        print(f"  Algorithm: {report['source_algorithm']} -> {report['target_algorithm']}")
+        print(f"  Output:    {report['output_file']}")
 
     except Exception as e:
         print(f"Error: {e}")

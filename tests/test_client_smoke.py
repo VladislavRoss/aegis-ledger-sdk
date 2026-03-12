@@ -1,10 +1,13 @@
 """Smoke Tests für AegisClient — kein echter Canister und kein echter Key nötig."""
 from __future__ import annotations
 
+import threading
 from concurrent.futures import ThreadPoolExecutor
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
+import pytest
 from aegis.types import Environment
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 # ---------------------------------------------------------------------------
 # Fixtures / Helpers
@@ -13,9 +16,9 @@ from aegis.types import Environment
 def _make_client():
     """Erstellt AegisClient mit gemocktem Transport und Key."""
     with (
-        patch("aegis.client.load_private_key", return_value=MagicMock()),
+        patch("aegis.client.load_private_key", return_value=Ed25519PrivateKey.generate()),
+        patch("aegis.client.load_config", return_value={}),
         patch("aegis.client.CanisterTransport") as MockTransport,
-        patch("aegis.client.sign_payload", return_value="mock_sig"),
     ):
         mock_transport_instance = MockTransport.return_value
         mock_transport_instance.call_update.return_value = {"actionId": "canister-act-123"}
@@ -100,9 +103,8 @@ def test_log_decision_uses_decision_variant():
 def test_org_id_passed_to_candid_args():
     """org_id muss als zweites Candid-Argument (Position 1) übergeben werden."""
     with (
-        patch("aegis.client.load_private_key", return_value=MagicMock()),
+        patch("aegis.client.load_private_key", return_value=Ed25519PrivateKey.generate()),
         patch("aegis.client.CanisterTransport") as MockTransport,
-        patch("aegis.client.sign_payload", return_value="mock_sig"),
     ):
         mock_transport_instance = MockTransport.return_value
         mock_transport_instance.call_update.return_value = {"actionId": "x"}
@@ -160,7 +162,7 @@ def test_api_key_id_at_position_23():
 
 
 def test_no_raw_data_sent_to_canister():
-    """Previews and reasoning must be empty strings — no PII on-chain (Phase 1 fix)."""
+    """Previews must be empty strings — no PII on-chain."""
     client, mock_transport = _make_client()
     client.log_tool_call(
         tool="search",
@@ -173,26 +175,31 @@ def test_no_raw_data_sent_to_canister():
     args_list = call_args[0][1]
     # Position 9 = inputPreview, Position 10 = outputPreview
     assert args_list[9]["value"] == "", f"inputPreview must be empty, got: {args_list[9]['value']}"
-    assert args_list[10]["value"] == "", f"outputPreview must be empty, got: {args_list[10]['value']}"
-    # Position 14 = decisionReasoning
-    assert args_list[14]["value"] == "", f"decisionReasoning must be empty, got: {args_list[14]['value']}"
+    assert args_list[10]["value"] == "", (
+        f"outputPreview must be empty, got: {args_list[10]['value']}"
+    )
+    # Position 14 = decisionReasoning — C-2: now sent (empty for tool_call with no reasoning)
+    assert args_list[14]["value"] == "", "tool_call with empty reasoning stays empty"
 
 
-def test_decision_reasoning_not_sent_to_canister():
-    """log_decision() reasoning must not be sent to canister."""
+def test_decision_reasoning_sent_to_canister_redacted():
+    """C-2 FIX: reasoning IS sent to canister, but PII is redacted (C-1)."""
     client, mock_transport = _make_client()
     client.log_decision(reasoning="User john@example.com requested refund", confidence=0.9)
 
     call_args = mock_transport.call_update.call_args
     args_list = call_args[0][1]
-    assert args_list[14]["value"] == "", f"decisionReasoning must be empty, got: {args_list[14]['value']}"
+    reasoning_value = args_list[14]["value"]
+    # Reasoning must be sent (not empty) — C-2 fix
+    assert reasoning_value != "", "decisionReasoning must not be empty after C-2 fix"
+    # PII (email) must be redacted — C-1 fix
+    assert "john@example.com" not in reasoning_value, "PII must be redacted"
+    assert "sha256:" in reasoning_value, "PII must be replaced with sha256 hash"
 
 
 def test_sequence_counter_thread_safe():
     """Sequence Counter muss unter concurrent access unique Werte liefern."""
     client, mock_transport = _make_client()
-    sequences: list[int] = []
-
     def log_one(_: int) -> None:
         mock_transport.call_update.return_value = {"actionId": "x"}
         client.log_tool_call(tool="t", input_data={}, output_data={}, duration_ms=0)
@@ -214,9 +221,8 @@ def test_sequence_counter_thread_safe():
 def test_session_id_none_generates_uuid():
     """Wenn session_id=None, muss ein 'sess_'-Prefix generiert werden."""
     with (
-        patch("aegis.client.load_private_key", return_value=MagicMock()),
+        patch("aegis.client.load_private_key", return_value=Ed25519PrivateKey.generate()),
         patch("aegis.client.CanisterTransport") as MockTransport,
-        patch("aegis.client.sign_payload", return_value="mock_sig"),
     ):
         mock_transport_instance = MockTransport.return_value
         mock_transport_instance.call_update.return_value = {"actionId": "x"}
@@ -243,9 +249,8 @@ def test_metadata_rejects_non_string_values():
     import pytest
 
     with (
-        patch("aegis.client.load_private_key", return_value=MagicMock()),
+        patch("aegis.client.load_private_key", return_value=Ed25519PrivateKey.generate()),
         patch("aegis.client.CanisterTransport"),
-        patch("aegis.client.sign_payload", return_value="mock_sig"),
     ):
         from aegis.client import AegisClient
 
@@ -264,9 +269,8 @@ def test_metadata_rejects_non_string_values():
 def test_fail_open_true_does_not_raise():
     """Bei fail_open=True darf ein Transport-Fehler keine Exception auslösen."""
     with (
-        patch("aegis.client.load_private_key", return_value=MagicMock()),
+        patch("aegis.client.load_private_key", return_value=Ed25519PrivateKey.generate()),
         patch("aegis.client.CanisterTransport") as MockTransport,
-        patch("aegis.client.sign_payload", return_value="mock_sig"),
     ):
         mock_transport_instance = MockTransport.return_value
         mock_transport_instance.call_update.side_effect = ConnectionError("network down")
@@ -330,3 +334,180 @@ def test_large_payload_hashes_correctly():
     assert result is not None or result is None  # fail_open may return None
     # Transport should have been called
     assert mock_transport.call_update.called
+
+
+# ---------------------------------------------------------------------------
+# Async @trace tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_trace_async_function_success():
+    """@trace should work with async functions."""
+    client, mock_transport = _make_client()
+
+    @client.trace(action_type="tool_call", tool_name="async_search")
+    async def async_search(query: str) -> dict:
+        return {"result": f"found {query}"}
+
+    result = await async_search("test")
+    assert result == {"result": "found test"}
+    assert mock_transport.call_update.called
+
+
+@pytest.mark.asyncio
+async def test_trace_async_function_exception():
+    """@trace should log errors and re-raise for async functions."""
+    client, mock_transport = _make_client()
+
+    @client.trace(action_type="tool_call", tool_name="async_fail")
+    async def async_fail() -> None:
+        raise ValueError("async boom")
+
+    with pytest.raises(ValueError, match="async boom"):
+        await async_fail()
+    # Should still have logged (error + possibly success attempt)
+    assert mock_transport.call_update.called
+
+
+@pytest.mark.asyncio
+async def test_trace_async_preserves_return_value():
+    """@trace async wrapper should preserve the exact return value."""
+    client, _ = _make_client()
+
+    @client.trace(action_type="tool_call")
+    async def compute(x: int, y: int) -> int:
+        return x + y
+
+    result = await compute(3, 7)
+    assert result == 10
+
+
+@pytest.mark.asyncio
+async def test_trace_async_no_capture_output():
+    """@trace with capture_output=False should still work for async."""
+    client, mock_transport = _make_client()
+
+    @client.trace(action_type="tool_call", capture_output=False)
+    async def secret_op() -> str:
+        return "sensitive"
+
+    result = await secret_op()
+    assert result == "sensitive"
+    assert mock_transport.call_update.called
+
+
+def test_trace_sync_still_works():
+    """Sync @trace should remain functional after async support was added."""
+    client, mock_transport = _make_client()
+
+    @client.trace(action_type="tool_call", tool_name="sync_tool")
+    def sync_tool(x: int) -> int:
+        return x * 2
+
+    result = sync_tool(5)
+    assert result == 10
+    assert mock_transport.call_update.called
+
+
+# ---------------------------------------------------------------------------
+# log_batch tests
+# ---------------------------------------------------------------------------
+
+def test_log_batch_returns_action_ids():
+    """log_batch should return a list of action IDs."""
+    client, mock_transport = _make_client()
+    entries = [
+        {
+            "action_type": "tool_call", "tool": "t1",
+            "input_data": {"a": 1}, "output_data": {}, "duration_ms": 10,
+        },
+        {
+            "action_type": "tool_call", "tool": "t2",
+            "input_data": {"b": 2}, "output_data": {}, "duration_ms": 20,
+        },
+        {
+            "action_type": "observation", "tool": "t3",
+            "input_data": {"c": 3}, "output_data": {}, "duration_ms": 30,
+        },
+    ]
+    results = client.log_batch(entries)
+    assert len(results) == 3
+    assert all(isinstance(r, str) for r in results)
+
+
+def test_log_batch_empty_list():
+    """log_batch with empty list should return empty list."""
+    client, _ = _make_client()
+    results = client.log_batch([])
+    assert results == []
+
+
+def test_log_batch_sequence_increases():
+    """log_batch entries should have monotonically increasing sequence numbers."""
+    client, mock_transport = _make_client()
+    entries = [
+        {
+            "action_type": "tool_call", "tool": f"t{i}",
+            "input_data": {}, "output_data": {}, "duration_ms": 0,
+        }
+        for i in range(5)
+    ]
+    client.log_batch(entries)
+    # Should have called call_update 5 times
+    assert mock_transport.call_update.call_count == 5
+
+
+# ---------------------------------------------------------------------------
+# H-2: drain_spill_buffer outside lock
+# ---------------------------------------------------------------------------
+
+def test_drain_called_when_spill_count_positive():
+    """H-2: drain_spill_buffer must be called when spill_count > 0."""
+    client, mock_transport = _make_client()
+    mock_transport.spill_count = 3
+    client.log_tool_call(tool="t", input_data={}, output_data={}, duration_ms=0)
+    mock_transport.drain_spill_buffer.assert_called_once()
+
+
+def test_drain_not_called_when_spill_count_zero():
+    """H-2: drain_spill_buffer must NOT be called when spill_count == 0."""
+    client, mock_transport = _make_client()
+    mock_transport.spill_count = 0
+    client.log_tool_call(tool="t", input_data={}, output_data={}, duration_ms=0)
+    mock_transport.drain_spill_buffer.assert_not_called()
+
+
+def test_drain_outside_lock_allows_concurrent_logging():
+    """H-2: Other threads can log while drain_spill_buffer is running."""
+    import time as time_mod
+
+    client, mock_transport = _make_client()
+    mock_transport.spill_count = 5
+    log_during_drain = threading.Event()
+
+    def slow_drain():
+        """Simulate a slow drain that takes 100ms (network call)."""
+        # Signal that drain is running — another thread can now log
+        log_during_drain.set()
+        time_mod.sleep(0.1)
+        return 5
+
+    mock_transport.drain_spill_buffer.side_effect = slow_drain
+
+    results = []
+
+    def log_from_thread():
+        log_during_drain.wait(timeout=2)
+        # This should NOT be blocked by the drain
+        r = client.log_tool_call(tool="concurrent", input_data={}, output_data={}, duration_ms=0)
+        results.append(r)
+
+    t = threading.Thread(target=log_from_thread)
+    t.start()
+
+    # First log triggers the drain (which runs outside lock)
+    client.log_tool_call(tool="trigger", input_data={}, output_data={}, duration_ms=0)
+
+    t.join(timeout=3)
+    assert len(results) == 1, "Concurrent thread must be able to log during drain"

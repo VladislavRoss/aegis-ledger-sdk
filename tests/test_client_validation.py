@@ -2,19 +2,18 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
-
 from aegis.types import Environment
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 
 def _make_client(**overrides):
     """Create AegisClient with mocked transport, accepting constructor overrides."""
     with (
-        patch("aegis.client.load_private_key", return_value=MagicMock()),
+        patch("aegis.client.load_private_key", return_value=Ed25519PrivateKey.generate()),
         patch("aegis.client.CanisterTransport") as MockTransport,
-        patch("aegis.client.sign_payload", return_value="mock_sig"),
     ):
         mock_transport = MockTransport.return_value
         mock_transport.call_update.return_value = {"actionId": "act_v123"}
@@ -106,15 +105,18 @@ class TestParameterValidation:
 # ---------------------------------------------------------------------------
 
 
-class TestTraceAsyncGuard:
-    def test_trace_on_async_function_raises(self):
+class TestTraceAsyncSupport:
+    def test_trace_on_async_function_accepted(self):
+        """@trace should accept async functions (async support added in Phase 24)."""
         client = _make_client()
 
-        with pytest.raises(TypeError, match="does not support async"):
+        @client.trace()
+        async def my_async_tool(x: int) -> int:
+            return x * 2
 
-            @client.trace()
-            async def my_async_tool(x: int) -> int:
-                return x * 2
+        # Should not raise — async is now supported
+        import inspect
+        assert inspect.iscoroutinefunction(my_async_tool)
 
 
 # ---------------------------------------------------------------------------

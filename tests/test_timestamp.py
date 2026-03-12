@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from aegis.timestamp import (
+from AEGIS_LEDGER.timestamp import (
     TimestampAuthority,
     TimestampError,
     TimestampToken,
@@ -189,7 +189,7 @@ class TestExtractStatus:
 # ---------------------------------------------------------------------------
 
 class TestTimestamp:
-    @patch("aegis.timestamp.urlopen")
+    @patch("AEGIS_LEDGER.timestamp.urlopen")
     def test_success(self, mock_urlopen: MagicMock, tsa: TimestampAuthority) -> None:
         tsr = _make_granted_tsr()
         mock_resp = MagicMock()
@@ -206,7 +206,7 @@ class TestTimestamp:
         assert len(token.token_der) > 0
         assert isinstance(token.timestamp_utc, datetime)
 
-    @patch("aegis.timestamp.urlopen")
+    @patch("AEGIS_LEDGER.timestamp.urlopen")
     def test_network_failure_returns_local_fallback(
         self, mock_urlopen: MagicMock, tsa: TimestampAuthority
     ) -> None:
@@ -219,7 +219,7 @@ class TestTimestamp:
         assert token.serial_number == "local"
         assert token.token_der == b""
 
-    @patch("aegis.timestamp.urlopen")
+    @patch("AEGIS_LEDGER.timestamp.urlopen")
     def test_timeout_returns_local_fallback(
         self, mock_urlopen: MagicMock, tsa: TimestampAuthority
     ) -> None:
@@ -228,7 +228,7 @@ class TestTimestamp:
         token = tsa.timestamp(b"test-data")
         assert token.tsa_name == "local"
 
-    @patch("aegis.timestamp.urlopen")
+    @patch("AEGIS_LEDGER.timestamp.urlopen")
     def test_rejection_raises_error(
         self, mock_urlopen: MagicMock, tsa: TimestampAuthority
     ) -> None:
@@ -243,7 +243,7 @@ class TestTimestamp:
         with pytest.raises(TimestampError, match="rejected"):
             tsa.timestamp(b"test-data")
 
-    @patch("aegis.timestamp.urlopen")
+    @patch("AEGIS_LEDGER.timestamp.urlopen")
     def test_empty_response_raises_error(
         self, mock_urlopen: MagicMock, tsa: TimestampAuthority
     ) -> None:
@@ -263,7 +263,7 @@ class TestTimestamp:
 # ---------------------------------------------------------------------------
 
 class TestTimestampHex:
-    @patch("aegis.timestamp.urlopen")
+    @patch("AEGIS_LEDGER.timestamp.urlopen")
     def test_valid_hex_hash(
         self, mock_urlopen: MagicMock, tsa: TimestampAuthority, sample_hex_hash: str
     ) -> None:
@@ -287,7 +287,7 @@ class TestTimestampHex:
         with pytest.raises(ValueError, match="Hex hash length"):
             tsa.timestamp_hex("abcd1234")  # too short for sha256
 
-    @patch("aegis.timestamp.urlopen")
+    @patch("AEGIS_LEDGER.timestamp.urlopen")
     def test_network_failure_returns_local(
         self, mock_urlopen: MagicMock, tsa: TimestampAuthority, sample_hex_hash: str
     ) -> None:
@@ -426,7 +426,7 @@ class TestTimestampVerification:
 # ---------------------------------------------------------------------------
 
 class TestThreadSafety:
-    @patch("aegis.timestamp.urlopen")
+    @patch("AEGIS_LEDGER.timestamp.urlopen")
     def test_concurrent_timestamps(self, mock_urlopen: MagicMock) -> None:
         """Multiple threads can call timestamp() concurrently without errors."""
         tsr = _make_granted_tsr()
@@ -534,7 +534,7 @@ class TestGenTimeParsing:
         tsr = _make_full_tsr(tst_info)
 
         tsa = TimestampAuthority(url="https://freetsa.org/tsr")
-        with patch("aegis.timestamp.urlopen") as mock_urlopen:
+        with patch("AEGIS_LEDGER.timestamp.urlopen") as mock_urlopen:
             mock_resp = MagicMock()
             mock_resp.read.return_value = tsr
             mock_resp.headers = {"Content-Type": "application/timestamp-reply"}
@@ -542,7 +542,7 @@ class TestGenTimeParsing:
             mock_resp.__exit__ = MagicMock(return_value=False)
             mock_urlopen.return_value = mock_resp
 
-            with patch("aegis.timestamp.secrets.randbits", return_value=nonce):
+            with patch("AEGIS_LEDGER.timestamp.secrets.randbits", return_value=nonce):
                 token = tsa.timestamp(b"test-data")
 
         # genTime should be 2025-01-15T12:00:00Z, NOT the current time
@@ -562,7 +562,7 @@ class TestGenTimeParsing:
         tsr = _make_full_tsr(tst_info)
 
         tsa = TimestampAuthority(url="https://freetsa.org/tsr")
-        with patch("aegis.timestamp.urlopen") as mock_urlopen:
+        with patch("AEGIS_LEDGER.timestamp.urlopen") as mock_urlopen:
             mock_resp = MagicMock()
             mock_resp.read.return_value = tsr
             mock_resp.headers = {"Content-Type": "application/timestamp-reply"}
@@ -571,14 +571,16 @@ class TestGenTimeParsing:
             mock_urlopen.return_value = mock_resp
 
             # We send nonce=123 but TSR contains nonce=999
-            with patch("aegis.timestamp.secrets.randbits", return_value=123):
-                with pytest.raises(TimestampError, match="Nonce mismatch"):
-                    tsa.timestamp(b"test-data")
+            with (
+                patch("AEGIS_LEDGER.timestamp.secrets.randbits", return_value=123),
+                pytest.raises(TimestampError, match="Nonce mismatch"),
+            ):
+                tsa.timestamp(b"test-data")
 
     def test_local_fallback_is_not_qualified(self) -> None:
         """Network error produces local fallback with tsa_name='local' and empty token_der."""
         tsa = TimestampAuthority(url="https://freetsa.org/tsr")
-        with patch("aegis.timestamp.urlopen", side_effect=OSError("offline")):
+        with patch("AEGIS_LEDGER.timestamp.urlopen", side_effect=OSError("offline")):
             token = tsa.timestamp(b"test-data")
 
         assert token.tsa_name == "local"

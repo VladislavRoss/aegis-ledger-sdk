@@ -4,7 +4,7 @@ import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 # Import from the package path used by the project
-from aegis.crypto import (
+from AEGIS_LEDGER.crypto import (
     canonical_json,
     compute_chain_hash,
     sha256_hex,
@@ -31,7 +31,7 @@ class TestCanonicalJson:
 
     def test_utf8_encoding(self):
         result = canonical_json({"name": "Zürich"})
-        assert "Zürich".encode("utf-8") in result
+        assert "Zürich".encode() in result
 
     def test_empty_dict(self):
         assert canonical_json({}) == b"{}"
@@ -141,7 +141,7 @@ class TestSignableDictNoToxicData:
     """Verify that to_signable_dict() contains NO raw data fields (Phase 1 Toxic Data fix)."""
 
     def _make_entry(self):
-        from aegis.types import (
+        from AEGIS_LEDGER.types import (
             ActionContext,
             ActionPayload,
             ActionStatus,
@@ -185,10 +185,12 @@ class TestSignableDictNoToxicData:
         signable = entry.to_signable_dict()
         assert "output_preview" not in signable["action"]
 
-    def test_no_decision_reasoning_in_signable_dict(self):
+    def test_decision_reasoning_in_signable_dict(self):
+        """C-2 FIX: decision_reasoning IS now signed for integrity protection."""
         entry = self._make_entry()
         signable = entry.to_signable_dict()
-        assert "decision_reasoning" not in signable["context"]
+        assert "decision_reasoning" in signable["context"]
+        assert signable["context"]["decision_reasoning"] == entry.context.decision_reasoning
 
     def test_hashes_still_present(self):
         entry = self._make_entry()
@@ -196,15 +198,19 @@ class TestSignableDictNoToxicData:
         assert signable["action"]["input_hash"] == "sha256:abc123"
         assert signable["action"]["output_hash"] == "sha256:def456"
 
-    def test_canonical_json_has_no_pii(self):
+    def test_canonical_json_excludes_previews(self):
+        """Signable dict excludes preview fields (PII redaction is in client.py)."""
         entry = self._make_entry()
         signable = entry.to_signable_dict()
         payload = canonical_json(signable)
         payload_str = payload.decode("utf-8")
-        assert "SSN" not in payload_str
-        assert "123-45-6789" not in payload_str
-        assert "john@example.com" not in payload_str
-        assert "sensitive data" not in payload_str
+        # Previews are excluded from signable dict
+        assert "input_preview" not in payload_str
+        assert "output_preview" not in payload_str
+        # C-2 FIX: decision_reasoning IS now in signable dict.
+        # PII redaction happens in client.py _log() before entry creation,
+        # not in to_signable_dict().
+        assert "decision_reasoning" in payload_str
 
 
 # ---------------------------------------------------------------------------
@@ -270,7 +276,7 @@ class TestChainHashSecurity:
 class TestGetPublicKeyHex:
     def test_hex_format_64_chars(self):
         """Ed25519 public key is 32 bytes = 64 hex chars."""
-        from aegis.crypto import get_public_key_hex
+        from AEGIS_LEDGER.crypto import get_public_key_hex
 
         private_key = Ed25519PrivateKey.generate()
         hex_key = get_public_key_hex(private_key)
@@ -280,7 +286,7 @@ class TestGetPublicKeyHex:
 
     def test_deterministic(self):
         """Same private key always produces the same public key hex."""
-        from aegis.crypto import get_public_key_hex
+        from AEGIS_LEDGER.crypto import get_public_key_hex
 
         private_key = Ed25519PrivateKey.generate()
         assert get_public_key_hex(private_key) == get_public_key_hex(private_key)
@@ -289,25 +295,29 @@ class TestGetPublicKeyHex:
 class TestLoadPrivateKey:
     def test_file_not_found(self, tmp_path):
         """FileNotFoundError with helpful message when key file missing."""
-        from aegis.crypto import load_private_key
+        from AEGIS_LEDGER.crypto import load_private_key
 
         with pytest.raises(FileNotFoundError, match="Private key not found"):
             load_private_key(tmp_path / "nonexistent.pem")
 
     def test_invalid_pem_raises(self, tmp_path):
         """ValueError or similar for non-PEM content."""
-        from aegis.crypto import load_private_key
+        from AEGIS_LEDGER.crypto import load_private_key
 
         bad_pem = tmp_path / "bad.pem"
         bad_pem.write_text("this is not a PEM file")
-        with pytest.raises(Exception):
+        with pytest.raises((ValueError, TypeError, OSError)):
             load_private_key(bad_pem)
 
     def test_valid_pem_loads(self, tmp_path):
         """Valid Ed25519 PEM loads successfully."""
-        from cryptography.hazmat.primitives.serialization import Encoding, NoEncryption, PrivateFormat
+        from cryptography.hazmat.primitives.serialization import (
+            Encoding,
+            NoEncryption,
+            PrivateFormat,
+        )
 
-        from aegis.crypto import load_private_key
+        from AEGIS_LEDGER.crypto import load_private_key
 
         key = Ed25519PrivateKey.generate()
         pem_path = tmp_path / "valid.pem"

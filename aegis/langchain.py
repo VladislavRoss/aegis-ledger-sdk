@@ -23,7 +23,7 @@ Usage:
         {"input": "What is the weather in Tokyo?"},
         config={"callbacks": [handler]}
     )
-    # That's it. Every action is now tamperproof-logged.
+    # That's it. Every action is now tamper-evident logged.
 """
 
 from __future__ import annotations
@@ -41,6 +41,9 @@ if TYPE_CHECKING:
 from aegis.types import ActionStatus
 
 logger = logging.getLogger("aegis.langchain")
+
+_MAX_PENDING_TIMERS = 10_000
+_TIMER_TTL_MS = 3_600_000  # 1 hour
 
 
 class AegisCallbackHandler:
@@ -101,6 +104,7 @@ class AegisCallbackHandler:
         """Called when an LLM starts generating."""
         with self._times_lock:
             self._start_times[run_id] = int(time.time() * 1000)
+            self._evict_stale_timers()
 
     def on_llm_end(
         self,
@@ -188,6 +192,7 @@ class AegisCallbackHandler:
         """Called when a tool starts executing."""
         with self._times_lock:
             self._start_times[run_id] = int(time.time() * 1000)
+            self._evict_stale_timers()
 
     def on_tool_end(
         self,
@@ -248,6 +253,7 @@ class AegisCallbackHandler:
         """Called when a chain starts."""
         with self._times_lock:
             self._start_times[run_id] = int(time.time() * 1000)
+            self._evict_stale_timers()
 
     def on_chain_end(
         self,
@@ -308,7 +314,10 @@ class AegisCallbackHandler:
             self._client.log_decision(
                 reasoning=f"Agent selected tool: {tool_name}. {log_text[:200]}",
                 confidence=0.0,
-                input_data={"selected_tool": tool_name, "tool_input_preview": str(tool_input)[:200]},
+                input_data={
+                    "selected_tool": tool_name,
+                    "tool_input_preview": str(tool_input)[:200],
+                },
                 metadata={"langchain_run_id": str(run_id)},
             )
         except Exception:
@@ -330,7 +339,9 @@ class AegisCallbackHandler:
             self._client.log_decision(
                 reasoning=f"Agent finished. {log_text[:200]}",
                 confidence=1.0,
-                output_data={"return_keys": list(output.keys()) if isinstance(output, dict) else []},
+                output_data={
+                    "return_keys": list(output.keys()) if isinstance(output, dict) else [],
+                },
                 metadata={"langchain_run_id": str(run_id)},
             )
         except Exception:
@@ -347,3 +358,15 @@ class AegisCallbackHandler:
         if start is None:
             return 0
         return int(time.time() * 1000) - start
+
+    def _evict_stale_timers(self) -> None:
+        """Remove timing entries older than 1h to prevent memory leaks.
+
+        Must be called while holding ``_times_lock``.
+        """
+        if len(self._start_times) <= _MAX_PENDING_TIMERS:
+            return
+        cutoff = int(time.time() * 1000) - _TIMER_TTL_MS
+        stale = [k for k, v in self._start_times.items() if v < cutoff]
+        for k in stale:
+            del self._start_times[k]

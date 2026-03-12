@@ -108,6 +108,7 @@ class LogEntry:
             "client_timestamp_ms": self.client_timestamp_ms,
             "context": {
                 "confidence_score": self.context.confidence_score,
+                "decision_reasoning": self.context.decision_reasoning,
                 "parent_action_id": self.context.parent_action_id,
             },
             "environment": {
@@ -132,10 +133,14 @@ class LogEntry:
 
 @dataclass(frozen=True, slots=True)
 class VerificationResult:
-    """Response from the canister's verify_entry endpoint."""
+    """Response from the canister's verifyEntry endpoint.
 
-    valid: bool
-    computed_hash: str
-    stored_hash: str
-    previous_hash: str
-    entry_timestamp: int
+    Field names match the Candid interface (snake_case of camelCase originals).
+    """
+
+    is_valid: bool
+    stored_chain_hash: str
+    message: str
+    previous_chain_hash: str
+    sequence_number: int
+    action_id: str

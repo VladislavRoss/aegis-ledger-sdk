@@ -38,15 +38,22 @@ import time
 import uuid
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
-from pathlib import Path
-from typing import Any, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar
 
+if TYPE_CHECKING:
+    from pathlib import Path
+
+from aegis import __version__  # single source of truth in __init__.py
+from aegis.config import get_default_scheme, get_signing_key_path, load_config
 from aegis.crypto import (
     canonical_json,
     compute_chain_hash,
+    create_scheme,
+    load_mldsa65_private_key,
     load_private_key,
+    load_slhdsa128s_private_key,
+    redact_pii_data,
     sha256_json,
-    sign_payload,
     truncate_preview,
 )
 from aegis.transport import CanisterTransport, TransportConfig, _build_add_ledger_entry_args
@@ -60,8 +67,6 @@ from aegis.types import (
 )
 
 logger = logging.getLogger("aegis")
-
-__version__ = "0.1.0"
 
 F = TypeVar("F", bound=Callable[..., Any])
 
@@ -86,6 +91,9 @@ class AegisClient:
         environment: Environment | None = None,
         network: str = "https://icp-api.io",
         fail_open: bool = True,
+        redact_pii: bool = True,
+        signature_scheme: str | None = None,
+        signing_key_path: str | Path | None = None,
         metadata: dict[str, str] | None = None,
     ):
         """
@@ -110,6 +118,21 @@ class AegisClient:
                        failures raise exceptions. Default True because
                        agent execution should never be blocked by
                        observability infrastructure.
+            redact_pii: If True (default), automatically detect and redact
+                        PII patterns (email, phone, SSN, AHV, credit card,
+                        IP address) in input/output data and reasoning
+                        before hashing. Redacted values are replaced with
+                        SHA-256 hashes. Required for DPA Art. 28 compliance.
+            signature_scheme: Cryptographic signature algorithm to use.
+                              Supported: "ed25519", "ml-dsa-65" (FIPS 204),
+                              "hybrid" (Ed25519 + ML-DSA-65). Defaults to
+                              ``~/.aegis/config.toml`` [signing] default_scheme,
+                              or "ed25519" if not configured. PQ algorithms
+                              require pqcrypto + signing_key_path.
+            signing_key_path: Path to ML-DSA-65 secret key file (raw bytes).
+                              Required when signature_scheme is "ml-dsa-65"
+                              or "hybrid". Can be set in config.toml
+                              [signing] signing_key_path.
             metadata: Default metadata attached to every log entry. Can be
                       overridden per-call.
         """
@@ -135,10 +158,48 @@ class AegisClient:
         self._sequence: int = 0
         self._lock = threading.Lock()
         self._fail_open = fail_open
+        self._redact_pii = redact_pii
         self._default_metadata = metadata or {}
 
-        # Load the signing key
+        # Resolve signature_scheme from config if not explicit
+        if signature_scheme is None:
+            _cfg = load_config()
+            signature_scheme = get_default_scheme(_cfg)
+            # Only read signing_key_path from config if the scheme needs it
+            if signing_key_path is None and signature_scheme in (
+                "hybrid", "ml-dsa-65", "slh-dsa-128s",
+            ):
+                signing_key_path = get_signing_key_path(_cfg)
+
+        # Always load Ed25519 PEM for ICP transport + org_id derivation
         self._private_key = load_private_key(private_key_path)
+
+        # Load the signing scheme (Ed25519 default, ML-DSA-65/SLH-DSA/Hybrid from signing_key_path)
+        if signature_scheme == "hybrid":
+            if signing_key_path is None:
+                raise ValueError(
+                    "signing_key_path is required when signature_scheme='hybrid'"
+                )
+            sk_bytes = load_mldsa65_private_key(signing_key_path)
+            self._scheme = create_scheme(
+                signature_scheme, (self._private_key, sk_bytes)
+            )
+        elif signature_scheme == "ml-dsa-65":
+            if signing_key_path is None:
+                raise ValueError(
+                    "signing_key_path is required when signature_scheme='ml-dsa-65'"
+                )
+            sk_bytes = load_mldsa65_private_key(signing_key_path)
+            self._scheme = create_scheme(signature_scheme, sk_bytes)
+        elif signature_scheme == "slh-dsa-128s":
+            if signing_key_path is None:
+                raise ValueError(
+                    "signing_key_path is required when signature_scheme='slh-dsa-128s'"
+                )
+            sk_bytes = load_slhdsa128s_private_key(signing_key_path)
+            self._scheme = create_scheme(signature_scheme, sk_bytes)
+        else:
+            self._scheme = create_scheme(signature_scheme, self._private_key)
 
         # Auto-detect environment if not provided
         self._environment = environment or self._detect_environment()
@@ -486,7 +547,7 @@ class AegisClient:
             self._transport.drain_spill_buffer()
         logger.info("Aegis client closed: agent=%s session=%s", self._agent_id, self._session_id)
 
-    def __enter__(self) -> "AegisClient":
+    def __enter__(self) -> AegisClient:
         return self
 
     def __exit__(self, *exc: Any) -> None:
@@ -495,6 +556,83 @@ class AegisClient:
     # ------------------------------------------------------------------
     # INTERNAL: Core logging implementation
     # ------------------------------------------------------------------
+
+    def _prepare_entry(
+        self,
+        action_type: ActionType,
+        tool: str,
+        input_data: Any,
+        output_data: Any,
+        duration_ms: int,
+        status: ActionStatus,
+        reasoning: str,
+        confidence: float,
+        merged_metadata: dict[str, str],
+        now_ms: int,
+        parent_id: str,
+    ) -> LogEntry:
+        """Build a LogEntry from validated, PII-redacted inputs (called inside lock)."""
+        return LogEntry(
+            agent_id=self._agent_id,
+            session_id=self._session_id,
+            sequence_number=self._sequence,
+            action=ActionPayload(
+                type=action_type,
+                tool=tool,
+                input_hash=sha256_json(input_data),
+                output_hash=sha256_json(output_data),
+                input_preview=truncate_preview(input_data),
+                output_preview=truncate_preview(output_data),
+                duration_ms=duration_ms,
+                status=status,
+            ),
+            context=ActionContext(
+                parent_action_id=parent_id,
+                decision_reasoning=reasoning,
+                confidence_score=confidence,
+            ),
+            environment=self._environment,
+            metadata=merged_metadata,
+            client_timestamp_ms=now_ms,
+            sdk_version=__version__,
+            api_key_id=self._api_key_id,
+        )
+
+    def _build_candid_args(
+        self,
+        entry: LogEntry,
+        chain_hash: str,
+        previous_chain_hash: str,
+        action_id: str,
+        payload_bytes: bytes,
+    ) -> list[Any]:
+        """Build the 24 Candid positional arguments for addLedgerEntry."""
+        return _build_add_ledger_entry_args(
+            action_id=action_id,
+            org_id=self._org_id,
+            agent_id=entry.agent_id,
+            session_id=entry.session_id,
+            sequence_number=entry.sequence_number,
+            action_type=entry.action.type.value,
+            tool=entry.action.tool,
+            input_hash=entry.action.input_hash,
+            output_hash=entry.action.output_hash,
+            input_preview="",
+            output_preview="",
+            duration_ms=entry.action.duration_ms,
+            status=entry.action.status.value,
+            parent_action_id=entry.context.parent_action_id,
+            decision_reasoning=entry.context.decision_reasoning,
+            confidence_score=entry.context.confidence_score,
+            framework=entry.environment.framework,
+            model_id=entry.environment.model_id,
+            client_timestamp_ms=entry.client_timestamp_ms,
+            payload_signature=entry.payload_signature,
+            chain_hash=chain_hash,
+            previous_chain_hash=previous_chain_hash,
+            payload_hex=payload_bytes.hex(),
+            key_id=self._api_key_id,
+        )
 
     def _log(
         self,
@@ -525,107 +663,54 @@ class AegisClient:
         if metadata:
             merged_metadata.update(metadata)
 
+        # C-1 FIX: Apply PII redaction before hashing (DPA Art. 28 compliance)
+        if self._redact_pii:
+            input_data = redact_pii_data(input_data)
+            output_data = redact_pii_data(output_data)
+            if reasoning:
+                reasoning = str(redact_pii_data(reasoning))
+
         # C4: Lock um den gesamten kritischen Bereich
         # (sequence read → sign → hash-chain → submit → increment)
+        should_drain = False
         with self._lock:
-            # Determine parent from the action stack (inside lock for thread safety)
             parent_id = self._action_stack[-1] if self._action_stack else ""
-            # Build the entry
-            entry = LogEntry(
-                agent_id=self._agent_id,
-                session_id=self._session_id,
-                sequence_number=self._sequence,
-                action=ActionPayload(
-                    type=action_type,
-                    tool=tool,
-                    input_hash=sha256_json(input_data),
-                    output_hash=sha256_json(output_data),
-                    input_preview=truncate_preview(input_data),
-                    output_preview=truncate_preview(output_data),
-                    duration_ms=duration_ms,
-                    status=status,
-                ),
-                context=ActionContext(
-                    parent_action_id=parent_id,
-                    decision_reasoning=reasoning,
-                    confidence_score=confidence,
-                ),
-                environment=self._environment,
-                metadata=merged_metadata,
-                client_timestamp_ms=now_ms,
-                sdk_version=__version__,
-                api_key_id=self._api_key_id,
+
+            entry = self._prepare_entry(
+                action_type, tool, input_data, output_data, duration_ms,
+                status, reasoning, confidence, merged_metadata, now_ms, parent_id,
             )
 
             # Sign the payload
             signable = entry.to_signable_dict()
             payload_bytes = canonical_json(signable)
-            entry.payload_signature = sign_payload(payload_bytes, self._private_key)
+            entry.payload_signature = self._scheme.sign(payload_bytes)
 
-            # SHA-256 Hash-Chain: berechne chain_hash aus vorherigem + aktuellem Payload
+            # SHA-256 Hash-Chain
             previous_chain_hash = self._chain_heads.get(entry.session_id, "")
             chain_hash = compute_chain_hash(previous_chain_hash, payload_bytes)
-
-            # Lokale action_id generieren (Canister gibt ggf. eine andere zurück)
             local_action_id = f"act_{uuid.uuid4().hex[:16]}"
 
-            # 24 Candid-Positionalargumente für addLedgerEntry bauen
-            candid_args = _build_add_ledger_entry_args(
-                action_id=local_action_id,
-                org_id=self._org_id,
-                agent_id=entry.agent_id,
-                session_id=entry.session_id,
-                sequence_number=entry.sequence_number,
-                action_type=entry.action.type.value,
-                tool=entry.action.tool,
-                input_hash=entry.action.input_hash,
-                output_hash=entry.action.output_hash,
-                input_preview="",
-                output_preview="",
-                duration_ms=entry.action.duration_ms,
-                status=entry.action.status.value,
-                parent_action_id=entry.context.parent_action_id,
-                decision_reasoning="",
-                confidence_score=entry.context.confidence_score,
-                framework=entry.environment.framework,
-                model_id=entry.environment.model_id,
-                client_timestamp_ms=entry.client_timestamp_ms,
-                payload_signature=entry.payload_signature,
-                chain_hash=chain_hash,
-                previous_chain_hash=previous_chain_hash,
-                payload_hex=payload_bytes.hex(),
-                key_id=self._api_key_id,
+            candid_args = self._build_candid_args(
+                entry, chain_hash, previous_chain_hash, local_action_id, payload_bytes,
             )
 
             try:
                 result = self._transport.call_update("addLedgerEntry", candid_args)
-                # ic-py decodes Candid record fields as hash-keyed dicts ("_<hash>").
-                # Candid hash of "actionId" = 3776271665.
                 action_id = (
                     result.get("actionId")
                     or result.get("_3776271665")
                     or f"local_{uuid.uuid4().hex[:8]}"
                 )
 
-                # Chain-Head nach erfolgreichem Canister-Call updaten
                 self._chain_heads[entry.session_id] = chain_hash
-
-                # Increment sequence on success
                 self._sequence += 1
-
-                # Opportunistically drain spill buffer
-                if self._transport.spill_count > 0:
-                    with contextlib.suppress(Exception):
-                        self._transport.drain_spill_buffer()
+                should_drain = self._transport.spill_count > 0
 
                 logger.debug(
                     "Logged action: seq=%d type=%s tool=%s → %s",
-                    entry.sequence_number,
-                    action_type.value,
-                    tool,
-                    action_id,
+                    entry.sequence_number, action_type.value, tool, action_id,
                 )
-                return action_id
 
             except Exception as e:
                 if self._fail_open:
@@ -633,12 +718,17 @@ class AegisClient:
                         "Failed to log action (fail_open=True, continuing): %s", e,
                         exc_info=True,
                     )
-                    # Keep chain continuity: advance heads so subsequent
-                    # entries chain off this entry's hash even if it was spilled.
-                    self._chain_heads[entry.session_id] = chain_hash
-                    self._sequence += 1
+                    # CRITICAL FIX (F-3): Do NOT advance chain head or sequence
+                    # when the canister never received the entry.
                     return f"spilled_{uuid.uuid4().hex[:8]}"
                 raise
+
+        # H-2 FIX: Drain spill buffer OUTSIDE the lock
+        if should_drain:
+            with contextlib.suppress(Exception):
+                self._transport.drain_spill_buffer()
+
+        return action_id
 
     # ------------------------------------------------------------------
     # INTERNAL: Environment auto-detection
@@ -655,8 +745,12 @@ class AegisClient:
         try:
             from cryptography.hazmat.primitives.serialization import (
                 Encoding as _Enc,
+            )
+            from cryptography.hazmat.primitives.serialization import (
                 NoEncryption as _NoEnc,
-                PrivateFormat as _PF,
+            )
+            from cryptography.hazmat.primitives.serialization import (
+                PrivateFormat as _PF,  # noqa: N814
             )
             from ic.identity import Identity  # type: ignore[import-untyped]
 
@@ -676,37 +770,53 @@ class AegisClient:
 
         Sniffs for known frameworks by checking installed packages.
         """
-        framework = "unknown"
+        frameworks: list[str] = []
         framework_version = "0.0.0"
         model_provider = ""
         model_id = ""
 
-        # Detect LangChain
+        # Detect installed frameworks (collect all, not last-write-wins)
         try:
-            import langchain  # type: ignore[import-untyped]
+            import langchain  # type: ignore[import-untyped,import-not-found]
 
-            framework = "langchain"
+            frameworks.append("langchain")
             framework_version = getattr(langchain, "__version__", "unknown")
         except ImportError:
             pass
 
-        # Detect CrewAI
         try:
             import crewai  # type: ignore[import-untyped]
 
-            framework = "crewai"
+            frameworks.append("crewai")
             framework_version = getattr(crewai, "__version__", "unknown")
         except ImportError:
             pass
 
-        # Detect AutoGPT/AutoGen
         try:
-            import autogen  # type: ignore[import-untyped]
+            import autogen  # type: ignore[import-untyped,import-not-found]
 
-            framework = "autogen"
+            frameworks.append("autogen")
             framework_version = getattr(autogen, "__version__", "unknown")
         except ImportError:
             pass
+
+        try:
+            import openai  # type: ignore[import-untyped]
+
+            frameworks.append("openai_agents")
+            framework_version = getattr(openai, "__version__", "unknown")
+        except ImportError:
+            pass
+
+        try:
+            import claude_agent_sdk  # type: ignore[import-untyped,import-not-found]
+
+            frameworks.append("anthropic_sdk")
+            framework_version = getattr(claude_agent_sdk, "__version__", "unknown")
+        except ImportError:
+            pass
+
+        framework = "+".join(frameworks) if frameworks else "unknown"
 
         runtime = f"python{sys.version_info.major}.{sys.version_info.minor}"
 

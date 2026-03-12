@@ -5,13 +5,14 @@ build-backend = "hatchling.build"
 [project]
 name = "aegis-ledger-sdk"
 version = "0.1.0"
-description = "Tamperproof execution ledger for AI agents. Log every tool call, decision, and error to a cryptographically verifiable audit trail."
+description = "Tamper-evident execution ledger for AI agents. Log every tool call, decision, and error to a cryptographically verifiable audit trail."
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
 authors = [{ name = "Aegis Ledger", email = "info@aegis-ledger.com" }]
 keywords = [
     "ai-agents",
+    "anthropic",
     "audit-trail",
     "autogen",
     "compliance",
@@ -19,7 +20,7 @@ keywords = [
     "langchain",
     "observability",
     "openai",
-    "tamperproof",
+    "tamper-evident",
     "icp",
 ]
 classifiers = [
@@ -46,8 +47,10 @@ langchain = ["langchain-core>=0.1"]
 crewai = ["crewai>=0.28"]
 openai-agents = ["openai-agents>=0.1"]
 autogen = ["autogen-agentchat>=0.4"]
+anthropic-agents = ["claude-agent-sdk>=0.1"]
 pdf = ["fpdf2>=2.7.4"]
-all = ["ic-py>=1.0", "langchain-core>=0.1", "crewai>=0.28", "openai-agents>=0.1", "autogen-agentchat>=0.4", "cryptography>=42.0", "fpdf2>=2.7.4"]
+pq = ["pqcrypto>=0.4"]
+all = ["ic-py>=1.0", "langchain-core>=0.1", "crewai>=0.28", "openai-agents>=0.1", "autogen-agentchat>=0.4", "claude-agent-sdk>=0.1", "cryptography>=42.0", "fpdf2>=2.7.4", "pqcrypto>=0.4"]
 dev = [
     "pytest>=8.0",
     "pytest-cov>=5.0",
@@ -91,6 +94,12 @@ exclude = [
 
 [tool.hatch.build.targets.wheel]
 packages = ["aegis"]
+
+[tool.pytest.ini_options]
+markers = [
+    "network: requires network access (deselect with '-m not network')",
+]
+addopts = "-m 'not network'"
 
 [tool.mypy]
 python_version = "3.10"

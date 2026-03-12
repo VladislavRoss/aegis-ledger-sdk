@@ -39,6 +39,8 @@ from aegis.types import ActionStatus
 logger = logging.getLogger("aegis.crewai")
 
 _PREVIEW_MAX = 300
+_MAX_PENDING_TIMERS = 10_000
+_TIMER_TTL_MS = 3_600_000  # 1 hour
 
 
 class AegisCrewCallback:
@@ -99,6 +101,7 @@ class AegisCrewCallback:
         """Record the start time for a task. Call before crew.kickoff()."""
         with self._times_lock:
             self._start_times[task_description] = int(time.time() * 1000)
+            self._evict_stale_timers()
 
     # ------------------------------------------------------------------
     # Handlers
@@ -201,3 +204,15 @@ class AegisCrewCallback:
         if start is None:
             return 0
         return max(0, int(time.time() * 1000) - start)
+
+    def _evict_stale_timers(self) -> None:
+        """Remove timing entries older than 1h to prevent memory leaks.
+
+        Must be called while holding ``_times_lock``.
+        """
+        if len(self._start_times) <= _MAX_PENDING_TIMERS:
+            return
+        cutoff = int(time.time() * 1000) - _TIMER_TTL_MS
+        stale = [k for k, v in self._start_times.items() if v < cutoff]
+        for k in stale:
+            del self._start_times[k]

@@ -38,6 +38,8 @@ _ACTION_TYPE_MAP: dict[str, str] = {
     "human_override": "humanOverride",
 }
 
+_REVERSE_ACTION_TYPE_MAP: dict[str, str] = {v: k for k, v in _ACTION_TYPE_MAP.items()}
+
 
 def action_type_to_candid_variant(action_type: str) -> dict[str, None]:
     """Konvertiert Python ActionType-String zu Candid Variant dict."""
@@ -188,6 +190,7 @@ class CanisterTransport:
         self._config = config
         self._agent: Any = None
         self._spill_path = config.spill_dir / f"{config.canister_id}.jsonl"
+        self._cached_spill_count: int = -1  # -1 = not yet loaded
         self._init_agent()
 
     def _init_agent(self) -> None:
@@ -279,7 +282,7 @@ class CanisterTransport:
         Call a canister query method (no retry, no spill).
 
         Query calls are read-only, fast (~200ms), and don't go through
-        consensus. Used for get_trace, verify_entry, get_org_stats.
+        consensus. Used for getHealth, verifyEntry, getTrace.
         """
         return self._do_call(method, args, call_type="query")
 
@@ -335,6 +338,7 @@ class CanisterTransport:
         spill_dir.chmod(0o700)  # owner-only directory
 
         # Enforce spill buffer size limit — discard oldest entries if full
+        trimmed = False
         if self._spill_path.exists():
             existing = self._spill_path.read_text().strip().split("\n")
             existing = [line for line in existing if line]
@@ -347,12 +351,18 @@ class CanisterTransport:
                 )
                 existing = existing[discard_count:]
                 self._spill_path.write_text("\n".join(existing) + "\n")
+                trimmed = True
 
+        # H-3 FIX: Extract raw values from Candid args so they survive
+        # JSON serialization. ic-py Types objects are NOT JSON-serializable,
+        # so json.dumps(default=str) corrupts them irreversibly.
+        raw_values = [arg["value"] for arg in args]
         entry = {
             "method": method,
-            "args": args,
+            "raw_values": raw_values,
             "timestamp_ms": int(time.time() * 1000),
             "canister_id": self._config.canister_id,
+            "spill_version": 2,
         }
         # H-1: create/append with 0o600 (owner read/write only)
         fd = os.open(str(self._spill_path), os.O_CREAT | os.O_WRONLY | os.O_APPEND, 0o600)
@@ -364,6 +374,13 @@ class CanisterTransport:
             with contextlib.suppress(OSError):
                 os.close(fd)
             raise
+        # Update cached count — cap at MAX after overflow trim
+        if trimmed:
+            self._cached_spill_count = _MAX_SPILL_ENTRIES
+        elif self._cached_spill_count < 0:
+            self._cached_spill_count = 1
+        else:
+            self._cached_spill_count += 1
 
     def drain_spill_buffer(self) -> int:
         """
@@ -382,7 +399,8 @@ class CanisterTransport:
         failed: list[str] = []
         drained = 0
 
-        spill_ttl_ms = 30 * 24 * 60 * 60 * 1000  # 30 days
+        spill_ttl_days = int(os.environ.get("AEGIS_SPILL_TTL_DAYS", "30"))
+        spill_ttl_ms = spill_ttl_days * 24 * 60 * 60 * 1000
         now_ms = int(time.time() * 1000)
 
         for line in lines:
@@ -393,14 +411,47 @@ class CanisterTransport:
                 age_ms = now_ms - entry.get("timestamp_ms", 0)
                 if age_ms > spill_ttl_ms:
                     age_days = age_ms // (24 * 60 * 60 * 1000)
-                    logger.warning("Discarding spill entry older than 30d (age=%dd)", age_days)
+                    logger.warning(
+                        "Discarding spill entry older than %dd (age=%dd)",
+                        spill_ttl_days, age_days,
+                    )
                     continue
 
                 method = entry.get("method", "")
                 if method not in _ALLOWED_SPILL_METHODS:
                     logger.error("Discarding spill entry with disallowed method %r", method)
                     continue
-                self._do_call(method, entry["args"], call_type="update")
+
+                # H-3 FIX: Rebuild Candid args from stored raw values
+                if entry.get("spill_version") == 2:
+                    v = entry["raw_values"]
+                    # v[5] is the variant dict, e.g. {"toolCall": null}
+                    variant_dict = v[5]
+                    action_type_str = _REVERSE_ACTION_TYPE_MAP[next(iter(variant_dict))]
+                    args = _build_add_ledger_entry_args(
+                        action_id=v[0], org_id=v[1], agent_id=v[2],
+                        session_id=v[3], sequence_number=v[4],
+                        action_type=action_type_str, tool=v[6],
+                        input_hash=v[7], output_hash=v[8],
+                        input_preview=v[9], output_preview=v[10],
+                        duration_ms=v[11], status=v[12],
+                        parent_action_id=v[13], decision_reasoning=v[14],
+                        confidence_score=v[15], framework=v[16],
+                        model_id=v[17], client_timestamp_ms=v[18],
+                        payload_signature=v[19], chain_hash=v[20],
+                        previous_chain_hash=v[21], payload_hex=v[22],
+                        key_id=v[23],
+                    )
+                else:
+                    # Legacy v1 format — args contain stringified Types,
+                    # cannot be reconstructed. Log and discard.
+                    logger.warning(
+                        "Discarding legacy v1 spill entry — Types objects "
+                        "were corrupted by json.dumps(default=str)"
+                    )
+                    continue
+
+                self._do_call(method, args, call_type="update")
                 drained += 1
             except Exception:
                 logger.warning("Spill replay failed for entry", exc_info=True)
@@ -412,6 +463,8 @@ class CanisterTransport:
         else:
             self._spill_path.unlink(missing_ok=True)
 
+        self._cached_spill_count = len(failed)
+
         if drained > 0:
             logger.info("Drained %d spilled entries from buffer", drained)
 
@@ -419,10 +472,16 @@ class CanisterTransport:
 
     @property
     def spill_count(self) -> int:
-        """Number of entries waiting in the local spill buffer."""
+        """Number of entries waiting in the local spill buffer (cached)."""
+        if self._cached_spill_count >= 0:
+            return self._cached_spill_count
+        # First access — read from disk once, then cache
         if not self._spill_path.exists():
+            self._cached_spill_count = 0
             return 0
         text = self._spill_path.read_text().strip()
         if not text:
+            self._cached_spill_count = 0
             return 0
-        return len([line for line in text.split("\n") if line])
+        self._cached_spill_count = len([line for line in text.split("\n") if line])
+        return self._cached_spill_count

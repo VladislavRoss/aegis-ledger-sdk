@@ -559,9 +559,11 @@ class TestReportReproducibility:
                 canister_id=CANISTER_ID, format=fmt,
                 stats=MOCK_STATS, health=MOCK_HEALTH,
             )
-            strip = lambda md: "\n".join(
-                l for l in md.splitlines() if not l.startswith("**Generated:**")
-            )
+            def strip(md: str) -> str:
+                return "\n".join(
+                    line for line in md.splitlines()
+                    if not line.startswith("**Generated:**")
+                )
             assert strip(r1.markdown) == strip(r2.markdown), f"{fmt.value} not reproducible"
 
 
@@ -685,7 +687,6 @@ class TestGeneratePdf:
     def test_pdf_missing_fpdf2_import_error(self, tmp_path: Path) -> None:
         """If fpdf2 is not installed, a helpful ImportError is raised."""
         import sys
-        from unittest.mock import MagicMock
 
         from aegis.report import generate_pdf
 

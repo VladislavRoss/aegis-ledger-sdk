@@ -1,9 +1,10 @@
 """
-aegis.timestamp -- eIDAS Qualified Timestamps via RFC 3161 TSA.
+aegis.timestamp -- RFC 3161 Timestamps via configurable TSA.
 
-eIDAS-qualified timestamps have full legal standing before all EU courts
-(Art. 41.2 eIDAS Regulation). This gives Aegis traces legal evidence weight
-that no competitor (LangSmith, Traceprompt, Datadog) can match.
+When connected to a Qualified Trust Service Provider (QTSP), eIDAS-qualified
+timestamps have full legal standing before all EU courts (Art. 41.2 eIDAS
+Regulation). Aegis provides the TSA client — the qualification depends on
+the TSA provider (e.g. Evidency, DigiCert).
 
 Usage:
     from aegis.timestamp import TimestampAuthority

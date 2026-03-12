@@ -2,11 +2,11 @@
 from __future__ import annotations
 
 import hashlib
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 from aegis.crypto import compute_chain_hash
 from aegis.types import Environment
-
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 # ---------------------------------------------------------------------------
 # compute_chain_hash()
@@ -79,10 +79,10 @@ def test_chain_is_linked():
 # ---------------------------------------------------------------------------
 
 def _make_client(session_id: str = "test-session"):
+    real_key = Ed25519PrivateKey.generate()
     with (
-        patch("aegis.client.load_private_key", return_value=MagicMock()),
+        patch("aegis.client.load_private_key", return_value=real_key),
         patch("aegis.client.CanisterTransport") as MockTransport,
-        patch("aegis.client.sign_payload", return_value="mock_sig"),
     ):
         mock_transport_instance = MockTransport.return_value
         mock_transport_instance.call_update.return_value = {"actionId": "canister-act-123"}
@@ -193,3 +193,115 @@ def test_new_session_resets_chain():
     client.new_session("old-session")
     # Chain-Head für diese Session wurde entfernt
     assert "old-session" not in client._chain_heads
+
+
+# ---------------------------------------------------------------------------
+# F-3 Regression: Chain-Break nach Spill (CRITICAL Fix)
+# ---------------------------------------------------------------------------
+
+def _make_fail_open_client(session_id: str = "spill-session"):
+    """Create a client with fail_open=True and a transport that raises."""
+    real_key = Ed25519PrivateKey.generate()
+    with (
+        patch("aegis.client.load_private_key", return_value=real_key),
+        patch("aegis.client.CanisterTransport") as MockTransport,
+    ):
+        mock_transport_instance = MockTransport.return_value
+        mock_transport_instance.spill_count = 0
+        mock_transport_instance.drain_spill_buffer.return_value = 0
+
+        from aegis.client import AegisClient
+
+        client = AegisClient(
+            canister_id="test-canister-id",
+            api_key_id="ak_test",
+            private_key_path="./fake_key.pem",
+            agent_id="test-agent",
+            org_id="test-org",
+            session_id=session_id,
+            fail_open=True,
+            environment=Environment(framework="test"),
+        )
+        return client, mock_transport_instance
+
+
+def test_spill_does_not_advance_chain_head():
+    """F-3: Bei Spill darf _chain_heads NICHT aktualisiert werden."""
+    client, mock_transport = _make_fail_open_client()
+
+    # First call succeeds — establishes chain head
+    mock_transport.call_update.return_value = {"actionId": "ok-1"}
+    client.log_tool_call(tool="first", input_data={}, output_data={}, duration_ms=0)
+    head_after_success = client._chain_heads.get("spill-session")
+    assert head_after_success is not None
+
+    # Second call fails (spill) — chain head must NOT change
+    mock_transport.call_update.side_effect = ConnectionError("network down")
+    result = client.log_tool_call(tool="spilled", input_data={}, output_data={}, duration_ms=0)
+    assert result.startswith("spilled_")
+
+    head_after_spill = client._chain_heads.get("spill-session")
+    assert head_after_spill == head_after_success, (
+        "Chain head must NOT advance after spill — canister never received the entry"
+    )
+
+
+def test_spill_does_not_advance_sequence():
+    """F-3: Bei Spill darf _sequence NICHT incrementiert werden."""
+    client, mock_transport = _make_fail_open_client()
+
+    # First call succeeds
+    mock_transport.call_update.return_value = {"actionId": "ok-1"}
+    client.log_tool_call(tool="first", input_data={}, output_data={}, duration_ms=0)
+    assert client.sequence_number == 1
+
+    # Second call fails (spill) — sequence must stay at 1
+    mock_transport.call_update.side_effect = ConnectionError("network down")
+    client.log_tool_call(tool="spilled", input_data={}, output_data={}, duration_ms=0)
+    assert client.sequence_number == 1, (
+        "Sequence must NOT advance after spill — entry was never committed"
+    )
+
+
+def test_chain_continues_correctly_after_spill():
+    """F-3: Entry nach Spill muss den gleichen previousChainHash haben
+    wie der gespillte Entry (weil der Canister den Spill nie erhalten hat)."""
+    client, mock_transport = _make_fail_open_client()
+
+    # First call succeeds — sets chain head
+    mock_transport.call_update.return_value = {"actionId": "ok-1"}
+    client.log_tool_call(tool="first", input_data={}, output_data={}, duration_ms=0)
+    first_args = mock_transport.call_update.call_args[0][1]
+    first_chain_hash = first_args[20]["value"]  # chainHash
+
+    # Second call fails (spill)
+    mock_transport.call_update.side_effect = ConnectionError("network down")
+    client.log_tool_call(tool="spilled", input_data={}, output_data={}, duration_ms=0)
+
+    # Third call succeeds — must chain off first_chain_hash (NOT the spilled hash)
+    mock_transport.call_update.side_effect = None
+    mock_transport.call_update.return_value = {"actionId": "ok-3"}
+    client.log_tool_call(tool="recovery", input_data={}, output_data={}, duration_ms=0)
+    third_args = mock_transport.call_update.call_args[0][1]
+    third_prev_hash = third_args[21]["value"]  # previousChainHash
+
+    assert third_prev_hash == first_chain_hash, (
+        "After spill, next successful entry must chain off the LAST SUCCESSFUL "
+        "entry's chain_hash, not the spilled entry's hash"
+    )
+
+
+def test_first_entry_spill_keeps_chain_heads_empty():
+    """F-3: Wenn der allererste Entry gespillt wird, muss _chain_heads leer bleiben."""
+    client, mock_transport = _make_fail_open_client()
+
+    # First call fails (spill) — chain heads must stay empty
+    mock_transport.call_update.side_effect = ConnectionError("network down")
+    client.log_tool_call(tool="spilled", input_data={}, output_data={}, duration_ms=0)
+
+    assert client._chain_heads == {}, (
+        "Chain heads must remain empty when first entry is spilled"
+    )
+    assert client.sequence_number == 0, (
+        "Sequence must remain 0 when first entry is spilled"
+    )

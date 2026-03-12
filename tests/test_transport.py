@@ -185,7 +185,7 @@ class TestSpillBuffer:
 
     def test_spill_buffer_limit_enforced(self, tmp_path):
         """Spill buffer enforces MAX_SPILL_ENTRIES limit."""
-        from aegis.transport import CanisterTransport, TransportConfig, _MAX_SPILL_ENTRIES
+        from aegis.transport import _MAX_SPILL_ENTRIES, CanisterTransport, TransportConfig
 
         config = TransportConfig(canister_id="limit-test", spill_dir=str(tmp_path))
         with pytest.MonkeyPatch.context() as m:
@@ -205,6 +205,7 @@ class TestSpillBuffer:
     def test_spill_discards_oldest_on_overflow(self, tmp_path):
         """When spill is full, oldest entries are discarded and newest kept."""
         import json
+
         from aegis.transport import CanisterTransport, TransportConfig
 
         config = TransportConfig(canister_id="oldest-test", spill_dir=str(tmp_path))
@@ -219,16 +220,20 @@ class TestSpillBuffer:
         spill_file = tmp_path / "oldest-test.jsonl"
         lines = []
         for i in range(1000):
-            lines.append(json.dumps({"method": "addLedgerEntry", "args": [{"idx": i}], "timestamp_ms": 1000 + i, "canister_id": "oldest-test"}))
+            lines.append(json.dumps({
+                "method": "addLedgerEntry", "args": [{"idx": i}],
+                "timestamp_ms": 1000 + i, "canister_id": "oldest-test",
+            }))
         spill_file.write_text("\n".join(lines) + "\n")
 
-        # Add one more — should trigger eviction
-        transport._spill_to_disk("addLedgerEntry", [{"idx": 1000}])
+        # Add one more — should trigger eviction (H-3: args need "value" key)
+        transport._spill_to_disk("addLedgerEntry", [{"type": "text", "value": 1000}])
 
-        # Last entry should be the newest
+        # Last entry should be the newest (spill_version 2 stores raw_values)
         content = spill_file.read_text().strip().split("\n")
         last_entry = json.loads(content[-1])
-        assert last_entry["args"] == [{"idx": 1000}]
+        assert last_entry["raw_values"] == [1000]
+        assert last_entry["spill_version"] == 2
 
     # ------------------------------------------------------------------
     # Batch 3: Drain, Retry, Edge Cases
@@ -237,6 +242,7 @@ class TestSpillBuffer:
     def test_drain_spill_replays_entries_on_success(self, tmp_path):
         """drain_spill_buffer retries spilled entries and returns drained count."""
         import json
+
         from aegis.transport import CanisterTransport, TransportConfig
 
         config = TransportConfig(canister_id="drain-ok", spill_dir=str(tmp_path))
@@ -247,13 +253,26 @@ class TestSpillBuffer:
             )
             transport = CanisterTransport(config)
 
-        # Pre-fill spill file with 3 entries
+        # Pre-fill spill file with 3 v2-format entries
         spill_file = tmp_path / "drain-ok.jsonl"
         import time as _time
         now_ms = int(_time.time() * 1000)
+        # Build proper v2 spill entries with 24 raw values
         entries = []
         for i in range(3):
-            entries.append(json.dumps({"method": "addLedgerEntry", "args": [{"v": i}], "timestamp_ms": now_ms, "canister_id": "drain-ok"}))
+            vals = [
+                f"act_{i}", "org-1", "agent-1", "sess-1", i,
+                {"toolCall": None}, "search", "sha256:in", "sha256:out",
+                "", "", 100, "success", "", "", 0.9, "unknown", "", now_ms,
+                "ed25519:abc", "chainabc", "", "payload", "ak_test",
+            ]
+            entries.append(json.dumps({
+                "method": "addLedgerEntry",
+                "raw_values": vals,
+                "timestamp_ms": now_ms,
+                "canister_id": "drain-ok",
+                "spill_version": 2,
+            }))
         spill_file.write_text("\n".join(entries) + "\n")
 
         # Mock _do_call to succeed
@@ -267,6 +286,7 @@ class TestSpillBuffer:
     def test_drain_spill_keeps_failed_entries(self, tmp_path):
         """Entries that fail during drain remain in the spill file."""
         import json
+
         from aegis.transport import CanisterTransport, TransportConfig
 
         config = TransportConfig(canister_id="drain-fail", spill_dir=str(tmp_path))
@@ -280,10 +300,24 @@ class TestSpillBuffer:
         import time as _time
         now_ms = int(_time.time() * 1000)
         spill_file = tmp_path / "drain-fail.jsonl"
-        entries = [
-            json.dumps({"method": "addLedgerEntry", "args": [{"v": 0}], "timestamp_ms": now_ms, "canister_id": "drain-fail"}),
-            json.dumps({"method": "addLedgerEntry", "args": [{"v": 1}], "timestamp_ms": now_ms, "canister_id": "drain-fail"}),
+        _dummy_values = [
+            "act_0", "org-1", "agent-1", "sess-1", 0,
+            {"toolCall": None}, "search", "sha256:in", "sha256:out",
+            "", "", 100, "success", "", "", 0.9, "unknown", "", now_ms,
+            "ed25519:abc", "chainabc", "", "payload", "ak_test",
         ]
+        entries = []
+        for i in range(2):
+            vals = list(_dummy_values)
+            vals[0] = f"act_{i}"
+            vals[4] = i
+            entries.append(json.dumps({
+                "method": "addLedgerEntry",
+                "raw_values": vals,
+                "timestamp_ms": now_ms,
+                "canister_id": "drain-fail",
+                "spill_version": 2,
+            }))
         spill_file.write_text("\n".join(entries) + "\n")
 
         call_count = 0
@@ -334,9 +368,12 @@ class TestSpillBuffer:
 
     def test_call_update_retries_and_raises_canister_error(self, tmp_path):
         """All retries exhausted → CanisterError with TRANSPORT_EXHAUSTED."""
-        from aegis.transport import CanisterTransport, TransportConfig, CanisterError
+        from aegis.transport import CanisterError, CanisterTransport, TransportConfig
 
-        config = TransportConfig(canister_id="retry-fail", spill_dir=str(tmp_path), max_retries=2, retry_base_delay_s=0.0)
+        config = TransportConfig(
+            canister_id="retry-fail", spill_dir=str(tmp_path),
+            max_retries=2, retry_base_delay_s=0.0,
+        )
         with pytest.MonkeyPatch.context() as m:
             m.setattr(
                 "aegis.transport.CanisterTransport._init_agent",
@@ -345,9 +382,15 @@ class TestSpillBuffer:
             transport = CanisterTransport(config)
 
         with pytest.MonkeyPatch.context() as m:
-            m.setattr(transport, "_do_call", lambda *a, **kw: (_ for _ in ()).throw(ConnectionError("down")))
+            m.setattr(
+                transport, "_do_call",
+                lambda *a, **kw: (_ for _ in ()).throw(
+                    ConnectionError("down")
+                ),
+            )
             with pytest.raises(CanisterError, match="TRANSPORT_EXHAUSTED"):
-                transport.call_update("addLedgerEntry", [{"test": True}])
+                # H-3: args must have "value" key for spill serialization
+                transport.call_update("addLedgerEntry", [{"type": "text", "value": "test"}])
 
         # Spill file should have been created
         assert transport.spill_count == 1
@@ -356,7 +399,10 @@ class TestSpillBuffer:
         """Retry succeeds on second attempt → result returned."""
         from aegis.transport import CanisterTransport, TransportConfig
 
-        config = TransportConfig(canister_id="retry-ok", spill_dir=str(tmp_path), max_retries=3, retry_base_delay_s=0.0)
+        config = TransportConfig(
+            canister_id="retry-ok", spill_dir=str(tmp_path),
+            max_retries=3, retry_base_delay_s=0.0,
+        )
         with pytest.MonkeyPatch.context() as m:
             m.setattr(
                 "aegis.transport.CanisterTransport._init_agent",
@@ -380,7 +426,7 @@ class TestSpillBuffer:
 
     def test_call_query_no_retry_no_spill(self, tmp_path):
         """Query failures do NOT create spill files and raise immediately."""
-        from aegis.transport import CanisterTransport, TransportConfig, CanisterError
+        from aegis.transport import CanisterError, CanisterTransport, TransportConfig
 
         config = TransportConfig(canister_id="query-fail", spill_dir=str(tmp_path))
         with pytest.MonkeyPatch.context() as m:
@@ -391,7 +437,12 @@ class TestSpillBuffer:
             transport = CanisterTransport(config)
 
         with pytest.MonkeyPatch.context() as m:
-            m.setattr(transport, "_do_call", lambda *a, **kw: (_ for _ in ()).throw(CanisterError("no data", "NOT_FOUND")))
+            m.setattr(
+                transport, "_do_call",
+                lambda *a, **kw: (_ for _ in ()).throw(
+                    CanisterError("no data", "NOT_FOUND")
+                ),
+            )
             with pytest.raises(CanisterError, match="NOT_FOUND"):
                 transport.call_query("getTrace", [{"session": "x"}])
 

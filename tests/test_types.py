@@ -71,14 +71,15 @@ class TestLogEntrySignableDict:
         )
 
     def test_excludes_toxic_fields(self) -> None:
-        """Signable dict must NOT contain PII-carrying fields."""
+        """Signable dict must NOT contain preview fields or signature."""
         entry = self._make_entry()
         signable = entry.to_signable_dict()
-        # These fields carry raw data / PII — must be excluded
+        # Preview fields carry raw data / PII — must be excluded
         assert "input_preview" not in signable.get("action", {})
         assert "output_preview" not in signable.get("action", {})
-        assert "decision_reasoning" not in signable.get("context", {})
         assert "payload_signature" not in signable
+        # C-2 FIX: decision_reasoning IS now signed (integrity protection)
+        assert "decision_reasoning" in signable.get("context", {})
 
     def test_contains_required_fields(self) -> None:
         """Signable dict has all required canister fields."""
@@ -134,22 +135,25 @@ class TestEnvironmentDefaults:
 class TestVerificationResult:
     def test_fields(self) -> None:
         vr = VerificationResult(
-            valid=True,
-            computed_hash="abc",
-            stored_hash="abc",
-            previous_hash="prev",
-            entry_timestamp=1700000000000,
+            is_valid=True,
+            stored_chain_hash="abc",
+            message="Chain hash verified",
+            previous_chain_hash="prev",
+            sequence_number=42,
+            action_id="act_test123",
         )
-        assert vr.valid is True
-        assert vr.computed_hash == "abc"
+        assert vr.is_valid is True
+        assert vr.stored_chain_hash == "abc"
+        assert vr.action_id == "act_test123"
 
     def test_frozen(self) -> None:
         vr = VerificationResult(
-            valid=False,
-            computed_hash="x",
-            stored_hash="y",
-            previous_hash="z",
-            entry_timestamp=0,
+            is_valid=False,
+            stored_chain_hash="x",
+            message="mismatch",
+            previous_chain_hash="z",
+            sequence_number=0,
+            action_id="act_fail",
         )
         with pytest.raises(AttributeError):
-            vr.valid = True  # type: ignore[misc]
+            vr.is_valid = True  # type: ignore[misc]
