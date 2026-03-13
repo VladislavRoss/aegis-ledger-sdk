@@ -505,7 +505,7 @@ def _build_aiuc_1_report(
         "",
         "## 2. Chain Integrity Proof",
         "",
-        "Tamper resistance is demonstrated through cryptographic hash chaining and "
+        "Tamper evidence is demonstrated through cryptographic hash chaining and "
         "digital signatures on an append-only ledger.",
         "",
         "| Metric | Value |",

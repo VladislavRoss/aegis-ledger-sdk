@@ -3,7 +3,7 @@ aegis.migrate — Re-sign ledger entries with a new cryptographic algorithm.
 
 Produces a migration proof: a JSON file containing the original entry
 metadata plus new signatures under the target algorithm. The on-chain
-entries remain immutable; the migration proof demonstrates that the
+entries remain unchanged on-chain; the migration proof demonstrates that the
 same key holder endorses the entries under a quantum-resistant scheme.
 
 Usage:

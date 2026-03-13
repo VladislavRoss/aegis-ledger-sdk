@@ -1,5 +1,5 @@
 """
-aegis.langchain — Zero-config LangChain callback handler.
+aegis.langchain — Minimal-config LangChain callback handler.
 
 This is the "Trojan Horse" integration. A LangChain developer adds TWO
 lines to their existing agent and every tool call, LLM invocation, and
