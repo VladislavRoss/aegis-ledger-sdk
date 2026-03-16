@@ -167,7 +167,7 @@ class AegisClient:
             signature_scheme = get_default_scheme(_cfg)
             # Only read signing_key_path from config if the scheme needs it
             if signing_key_path is None and signature_scheme in (
-                "hybrid", "ml-dsa-65", "slh-dsa-128s",
+                "hybrid", "ml-dsa-65", "ml-dsa-87", "slh-dsa-128s",
             ):
                 signing_key_path = get_signing_key_path(_cfg)
 
@@ -190,6 +190,14 @@ class AegisClient:
                     "signing_key_path is required when signature_scheme='ml-dsa-65'"
                 )
             sk_bytes = load_mldsa65_private_key(signing_key_path)
+            self._scheme = create_scheme(signature_scheme, sk_bytes)
+        elif signature_scheme == "ml-dsa-87":
+            if signing_key_path is None:
+                raise ValueError(
+                    "signing_key_path is required when signature_scheme='ml-dsa-87'"
+                )
+            from aegis.crypto import load_mldsa87_private_key
+            sk_bytes = load_mldsa87_private_key(signing_key_path)
             self._scheme = create_scheme(signature_scheme, sk_bytes)
         elif signature_scheme == "slh-dsa-128s":
             if signing_key_path is None:

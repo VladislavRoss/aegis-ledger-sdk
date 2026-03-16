@@ -709,7 +709,7 @@ SUPPORTED_SCHEMES: dict[str, type] = {
 def create_scheme(
     algorithm_id: str,
     private_key: Ed25519PrivateKey | bytes | tuple[Ed25519PrivateKey, bytes],
-) -> Ed25519Scheme | MLDSA65Scheme | SLHDSA128sScheme | HybridScheme:
+) -> Ed25519Scheme | MLDSA65Scheme | MLDSA87Scheme | SLHDSA128sScheme | HybridScheme:
     """Create a signature scheme instance bound to the given private key.
 
     For Ed25519, pass an ``Ed25519PrivateKey``.

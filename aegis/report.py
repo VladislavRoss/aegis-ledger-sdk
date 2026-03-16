@@ -28,9 +28,11 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
+from aegis import __version__
+
 logger = logging.getLogger("aegis.report")
 
-SDK_VERSION = "0.1.0"
+SDK_VERSION = __version__
 
 
 # ---------------------------------------------------------------------------
