@@ -7,6 +7,8 @@ Handles:
   3. Ed25519 signature generation over canonical JSON.
   4. Ed25519 private key loading from PEM files.
   5. ML-DSA-65 (FIPS 204) post-quantum signatures (optional, requires pqcrypto).
+  6. SLH-DSA-128s (FIPS 205) stateless hash-based signatures.
+  7. Hybrid Ed25519 + ML-DSA-65 composite signatures.
 
 The canonical JSON format is the security-critical serialization used
 to produce the `payload_signature`. Any deviation in key ordering,
