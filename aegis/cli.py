@@ -59,6 +59,7 @@ Commands:
 Algorithms (keygen):
   ed25519       Ed25519 (default, classical)
   ml-dsa-65     ML-DSA-65 / FIPS 204 (post-quantum, requires pqcrypto)
+  ml-dsa-87     ML-DSA-87 / FIPS 204 CNSA 2.0 Level 5 (requires pqcrypto)
   slh-dsa-128s  SLH-DSA-SHAKE-128s / FIPS 205 (hash-based PQ fallback)
   hybrid        Ed25519 + ML-DSA-65 combined (requires pqcrypto)
 
@@ -71,6 +72,7 @@ Report Formats:
 Examples:
   aegis keygen ./keys/my_agent.pem
   aegis keygen ./keys/my_agent.mldsa65 --algorithm ml-dsa-65
+  aegis keygen ./keys/my_agent.mldsa87 --algorithm ml-dsa-87
   aegis keygen ./keys/my_agent.slh --algorithm slh-dsa-128s
   aegis keygen ./keys/my_agent --algorithm hybrid
   aegis verify toqqq-lqaaa-aaaae-afc2a-cai act_a7f3b2c19e4d
@@ -96,10 +98,10 @@ def _cmd_keygen(args: list[str]) -> None:
         idx = args.index("--algorithm")
         if idx + 1 < len(args):
             algorithm = args[idx + 1]
-            if algorithm not in ("ed25519", "ml-dsa-65", "slh-dsa-128s", "hybrid"):
+            if algorithm not in ("ed25519", "ml-dsa-65", "ml-dsa-87", "slh-dsa-128s", "hybrid"):
                 print(
                     f"Error: Unknown algorithm '{algorithm}'. "
-                    "Use 'ed25519', 'ml-dsa-65', 'slh-dsa-128s', or 'hybrid'."
+                    "Use 'ed25519', 'ml-dsa-65', 'ml-dsa-87', 'slh-dsa-128s', or 'hybrid'."
                 )
                 sys.exit(1)
 
@@ -122,6 +124,14 @@ def _cmd_keygen(args: list[str]) -> None:
             print(f"✓ Private key saved to: {path}")
             print(f"✓ Public key saved to:  {path}.pub")
             print(f"✓ Public key (hex):     {pub_hex}")
+        elif algorithm == "ml-dsa-87":
+            from aegis.crypto import generate_mldsa87_keypair
+
+            _, pub_hex = generate_mldsa87_keypair(path)
+            print("✓ Algorithm:            ML-DSA-87 (FIPS 204, CNSA 2.0 Level 5)")
+            print(f"✓ Private key saved to: {path}")
+            print(f"✓ Public key saved to:  {path}.pub")
+            print(f"✓ Public key (hex):     {pub_hex[:32]}...{pub_hex[-32:]}")
         elif algorithm == "ml-dsa-65":
             from aegis.crypto import generate_mldsa65_keypair
 

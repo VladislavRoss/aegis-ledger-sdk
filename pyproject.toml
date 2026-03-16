@@ -50,7 +50,8 @@ autogen = ["autogen-agentchat>=0.4"]
 anthropic-agents = ["claude-agent-sdk>=0.1"]
 pdf = ["fpdf2>=2.7.4"]
 pq = ["pqcrypto>=0.4"]
-all = ["ic-py>=1.0", "langchain-core>=0.1", "crewai>=0.28", "openai-agents>=0.1", "autogen-agentchat>=0.4", "claude-agent-sdk>=0.1", "cryptography>=42.0", "fpdf2>=2.7.4", "pqcrypto>=0.4"]
+mcp = ["mcp>=1.20,<2.0"]
+all = ["ic-py>=1.0", "langchain-core>=0.1", "crewai>=0.28", "openai-agents>=0.1", "autogen-agentchat>=0.4", "claude-agent-sdk>=0.1", "cryptography>=42.0", "fpdf2>=2.7.4", "pqcrypto>=0.4", "mcp>=1.20,<2.0"]
 dev = [
     "pytest>=8.0",
     "pytest-cov>=5.0",
@@ -61,6 +62,7 @@ dev = [
 
 [project.scripts]
 aegis = "aegis.cli:main"
+aegis-mcp = "aegis.mcp_server:main"
 
 [project.urls]
 Homepage = "https://www.aegis-ledger.com"
@@ -93,7 +95,8 @@ exclude = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["aegis"]
+packages = ["."]
+sources = {"." = "aegis"}
 
 [tool.pytest.ini_options]
 markers = [

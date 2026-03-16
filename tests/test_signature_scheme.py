@@ -1,4 +1,4 @@
-"""Tests for SignatureScheme Protocol: Ed25519, ML-DSA-65, SLH-DSA-128s, Hybrid."""
+"""Tests for SignatureScheme Protocol: Ed25519, ML-DSA-65, ML-DSA-87, SLH-DSA-128s, Hybrid."""
 
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -8,6 +8,7 @@ from AEGIS_LEDGER.crypto import (
     Ed25519Scheme,
     HybridScheme,
     MLDSA65Scheme,
+    MLDSA87Scheme,
     SignatureScheme,
     SLHDSA128sScheme,
     canonical_json,
@@ -15,6 +16,8 @@ from AEGIS_LEDGER.crypto import (
     sign_payload,
     verify_signature,
 )
+
+# ML-DSA-87 scheme/keygen/create tests are in test_mldsa87.py
 
 # ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -509,11 +512,17 @@ class TestSupportedSchemes:
         assert "hybrid" in SUPPORTED_SCHEMES
         assert SUPPORTED_SCHEMES["hybrid"] is HybridScheme
 
-    def test_four_schemes_registered(self):
+    def test_mldsa87_registered(self):
+        from AEGIS_LEDGER.crypto import SUPPORTED_SCHEMES
+
+        assert "ml-dsa-87" in SUPPORTED_SCHEMES
+        assert SUPPORTED_SCHEMES["ml-dsa-87"] is MLDSA87Scheme
+
+    def test_five_schemes_registered(self):
         from AEGIS_LEDGER.crypto import SUPPORTED_SCHEMES
 
         assert sorted(SUPPORTED_SCHEMES.keys()) == [
-            "ed25519", "hybrid", "ml-dsa-65", "slh-dsa-128s",
+            "ed25519", "hybrid", "ml-dsa-65", "ml-dsa-87", "slh-dsa-128s",
         ]
 
 

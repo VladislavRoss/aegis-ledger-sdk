@@ -539,8 +539,8 @@ def _build_aiuc_1_report(
         "",
         "## 4. Data Retention Proof",
         "",
-        "Insurance underwriting requires proof that audit data cannot be deleted, "
-        "modified, or lost.",
+        "Insurance underwriting requires proof that audit data is tamper-evident "
+        "and cryptographically verifiable.",
         "",
         "| Property | Evidence |",
         "|----------|----------|",

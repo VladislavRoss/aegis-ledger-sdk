@@ -9,6 +9,7 @@ Handles:
   5. ML-DSA-65 (FIPS 204) post-quantum signatures (optional, requires pqcrypto).
   6. SLH-DSA-128s (FIPS 205) stateless hash-based signatures.
   7. Hybrid Ed25519 + ML-DSA-65 composite signatures.
+  8. ML-DSA-87 (FIPS 204, CNSA 2.0 Level 5) post-quantum signatures.
 
 The canonical JSON format is the security-critical serialization used
 to produce the `payload_signature`. Any deviation in key ordering,
@@ -382,6 +383,63 @@ class SLHDSA128sScheme:
         return 7856
 
 
+class MLDSA87Scheme:
+    """ML-DSA-87 (FIPS 204, CNSA 2.0 Level 5) post-quantum signature scheme.
+
+    Higher security level than ML-DSA-65 — required for CNSA 2.0 compliance
+    starting January 2027. Larger keys (PK=2592B, SK=4896B) and signatures
+    (4627B) but provides NIST Security Level 5.
+
+    Requires the ``pqcrypto`` package: ``pip install pqcrypto``
+    or ``pip install aegis-ledger-sdk[pq]``.
+    """
+
+    def __init__(self, private_key_bytes: bytes) -> None:
+        try:
+            from pqcrypto.sign.ml_dsa_87 import sign as _sign  # type: ignore[import-untyped]
+            from pqcrypto.sign.ml_dsa_87 import verify as _verify
+        except ImportError as exc:
+            raise ImportError(
+                "ML-DSA-87 requires the pqcrypto package. "
+                "Install it with: pip install pqcrypto"
+            ) from exc
+        if len(private_key_bytes) != 4896:
+            raise ValueError(
+                f"ML-DSA-87 secret key must be 4896 bytes, got {len(private_key_bytes)}"
+            )
+        self._sk = private_key_bytes
+        self._sign = _sign
+        self._verify = _verify
+
+    @property
+    def algorithm_id(self) -> str:
+        return "ml-dsa-87"
+
+    def sign(self, payload: bytes) -> str:
+        sig = self._sign(self._sk, payload)
+        return f"ml-dsa-87:{sig.hex()}"
+
+    def verify(self, payload: bytes, signature: str, public_key_bytes: bytes) -> bool:
+        if not signature.startswith("ml-dsa-87:"):
+            return False
+        try:
+            sig_bytes = bytes.fromhex(signature[len("ml-dsa-87:"):])
+        except ValueError:
+            return False
+        try:
+            return bool(self._verify(public_key_bytes, payload, sig_bytes))
+        except Exception:
+            return False
+
+    @property
+    def public_key_size(self) -> int:
+        return 2592
+
+    @property
+    def signature_size(self) -> int:
+        return 4627
+
+
 class HybridScheme:
     """Hybrid Ed25519 + ML-DSA-65 signature scheme (PQ-2).
 
@@ -492,6 +550,64 @@ def load_mldsa65_private_key(path: str | Path) -> bytes:
     return raw
 
 
+def generate_mldsa87_keypair(path: str | Path) -> tuple[bytes, str]:
+    """Generate an ML-DSA-87 keypair and save the secret key to a raw file.
+
+    Returns (secret_key_bytes, public_key_hex).
+    The secret key is saved as raw bytes to ``path``.
+    The public key is saved as hex to ``path.pub``.
+    """
+    try:
+        from pqcrypto.sign.ml_dsa_87 import (
+            generate_keypair as _mldsa87_keygen,  # type: ignore[import-untyped]
+        )
+    except ImportError as exc:
+        raise ImportError(
+            "ML-DSA-87 requires the pqcrypto package. "
+            "Install it with: pip install pqcrypto"
+        ) from exc
+
+    key_path = Path(path)
+    if key_path.exists():
+        raise FileExistsError(
+            f"Key already exists at {key_path}. "
+            "Delete it first, or specify a different path."
+        )
+    key_path.parent.mkdir(parents=True, exist_ok=True)
+
+    pk, sk = _mldsa87_keygen()
+
+    key_path.write_bytes(sk)
+    key_path.chmod(0o600)
+
+    pub_hex = pk.hex()
+    pub_path = key_path.with_suffix(".pub")
+    pub_path.write_text(pub_hex + "\n")
+
+    return sk, pub_hex
+
+
+def load_mldsa87_private_key(path: str | Path) -> bytes:
+    """Load an ML-DSA-87 secret key from a raw bytes file.
+
+    Raises FileNotFoundError if path doesn't exist.
+    Raises ValueError if the file size is wrong.
+    """
+    key_path = Path(path)
+    if not key_path.exists():
+        raise FileNotFoundError(
+            f"ML-DSA-87 secret key not found: {key_path}\n"
+            f"Generate one with: aegis keygen {key_path} --algorithm ml-dsa-87"
+        )
+    raw = key_path.read_bytes()
+    if len(raw) != 4896:
+        raise ValueError(
+            f"ML-DSA-87 secret key must be 4896 bytes, got {len(raw)}. "
+            f"File may be corrupt or not an ML-DSA-87 key."
+        )
+    return raw
+
+
 def generate_slhdsa128s_keypair(path: str | Path) -> tuple[bytes, str]:
     """Generate an SLH-DSA-SHAKE-128s keypair and save the secret key.
 
@@ -584,6 +700,7 @@ def generate_hybrid_keypair(
 SUPPORTED_SCHEMES: dict[str, type] = {
     "ed25519": Ed25519Scheme,
     "ml-dsa-65": MLDSA65Scheme,
+    "ml-dsa-87": MLDSA87Scheme,
     "slh-dsa-128s": SLHDSA128sScheme,
     "hybrid": HybridScheme,
 }
@@ -609,6 +726,10 @@ def create_scheme(
         if not isinstance(private_key, bytes):
             raise TypeError("ML-DSA-65 requires raw secret key bytes (4032 bytes)")
         return MLDSA65Scheme(private_key)
+    if algorithm_id == "ml-dsa-87":
+        if not isinstance(private_key, bytes):
+            raise TypeError("ML-DSA-87 requires raw secret key bytes (4896 bytes)")
+        return MLDSA87Scheme(private_key)
     if algorithm_id == "slh-dsa-128s":
         if not isinstance(private_key, bytes):
             raise TypeError("SLH-DSA-128s requires raw secret key bytes (64 bytes)")

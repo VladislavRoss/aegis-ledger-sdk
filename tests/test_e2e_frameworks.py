@@ -183,9 +183,10 @@ class TestPQE2EConfigSystem:
         assert scheme == "ed25519"
 
     def test_config_valid_schemes(self):
-        """PQ-E2E Config: Alle 4 Schemes sind gültige Config-Werte."""
+        """PQ-E2E Config: Alle 5 Schemes sind gültige Config-Werte."""
         from aegis.config import _VALID_SCHEMES
-        assert frozenset({"ed25519", "ml-dsa-65", "slh-dsa-128s", "hybrid"}) == _VALID_SCHEMES
+        expected = frozenset({"ed25519", "ml-dsa-65", "ml-dsa-87", "slh-dsa-128s", "hybrid"})
+        assert expected == _VALID_SCHEMES
 
     def test_config_signing_key_path(self, tmp_path):
         """PQ-E2E Config: signing_key_path wird korrekt aus Config gelesen."""

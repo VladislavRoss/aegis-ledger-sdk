@@ -59,6 +59,7 @@ def _build_scheme(
     from aegis.crypto import (
         create_scheme,
         load_mldsa65_private_key,
+        load_mldsa87_private_key,
         load_private_key,
         load_slhdsa128s_private_key,
     )
@@ -74,6 +75,12 @@ def _build_scheme(
             raise ValueError("--signing-key required for ml-dsa-65")
         sk = load_mldsa65_private_key(signing_key_path)
         return create_scheme("ml-dsa-65", sk)
+
+    if target_algorithm == "ml-dsa-87":
+        if not signing_key_path:
+            raise ValueError("--signing-key required for ml-dsa-87")
+        sk = load_mldsa87_private_key(signing_key_path)
+        return create_scheme("ml-dsa-87", sk)
 
     if target_algorithm == "slh-dsa-128s":
         if not signing_key_path:
@@ -95,7 +102,7 @@ def _build_scheme(
 
 def _detect_source_algorithm(signature: str) -> str:
     """Detect the algorithm from a signature prefix."""
-    for prefix in ("hybrid:", "ml-dsa-65:", "slh-dsa-128s:", "ed25519:"):
+    for prefix in ("hybrid:", "ml-dsa-87:", "ml-dsa-65:", "slh-dsa-128s:", "ed25519:"):
         if signature.startswith(prefix):
             return prefix.rstrip(":")
     return "unknown"

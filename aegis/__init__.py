@@ -24,7 +24,17 @@ __version__ = "0.1.0"
 
 from aegis.client import AegisClient
 from aegis.config import get_default_scheme, get_signing_key_path, load_config
-from aegis.crypto import generate_keypair, sha256_hex, sha256_json
+from aegis.crypto import (
+    generate_keypair,
+    generate_mldsa65_keypair,
+    generate_mldsa87_keypair,
+    generate_slhdsa128s_keypair,
+    load_mldsa65_private_key,
+    load_mldsa87_private_key,
+    load_slhdsa128s_private_key,
+    sha256_hex,
+    sha256_json,
+)
 from aegis.report import (
     ComplianceReport,
     ReportFormat,
@@ -72,6 +82,12 @@ __all__ = [
     "get_signing_key_path",
     "generate_all_reports",
     "generate_keypair",
+    "generate_mldsa65_keypair",
+    "generate_mldsa87_keypair",
+    "generate_slhdsa128s_keypair",
+    "load_mldsa65_private_key",
+    "load_mldsa87_private_key",
+    "load_slhdsa128s_private_key",
     "load_config",
     "generate_pdf",
     "generate_report",

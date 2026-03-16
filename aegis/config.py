@@ -6,7 +6,7 @@ Reads ``~/.aegis/config.toml`` (if it exists) and exposes typed helpers.
 Supported keys::
 
     [signing]
-    default_scheme = "hybrid"        # "ed25519" | "ml-dsa-65" | "slh-dsa-128s" | "hybrid"
+    default_scheme = "hybrid"        # ed25519 | ml-dsa-65 | ml-dsa-87 | slh-dsa-128s | hybrid
     signing_key_path = "./agent.mldsa65"  # path to ML-DSA-65 SK (for hybrid/ml-dsa-65)
 """
 
@@ -19,7 +19,7 @@ import warnings
 from pathlib import Path
 from typing import Any
 
-_VALID_SCHEMES = frozenset({"ed25519", "ml-dsa-65", "slh-dsa-128s", "hybrid"})
+_VALID_SCHEMES = frozenset({"ed25519", "ml-dsa-65", "ml-dsa-87", "slh-dsa-128s", "hybrid"})
 
 _CONFIG_DIR = Path(os.environ.get("AEGIS_CONFIG_DIR", "~/.aegis")).expanduser()
 _CONFIG_FILE = _CONFIG_DIR / "config.toml"

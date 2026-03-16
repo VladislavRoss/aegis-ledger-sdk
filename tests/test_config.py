@@ -93,8 +93,8 @@ class TestGetSigningKeyPath:
 class TestValidSchemes:
     """Test _VALID_SCHEMES constant."""
 
-    def test_all_four_schemes(self):
-        assert {"ed25519", "ml-dsa-65", "slh-dsa-128s", "hybrid"} == _VALID_SCHEMES
+    def test_all_five_schemes(self):
+        assert {"ed25519", "ml-dsa-65", "ml-dsa-87", "slh-dsa-128s", "hybrid"} == _VALID_SCHEMES
 
 
 class TestClientConfigIntegration:

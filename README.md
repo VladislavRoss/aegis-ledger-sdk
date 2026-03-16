@@ -2,9 +2,11 @@
 
 **Tamper-evident audit logs for AI agents.**
 
-When autonomous agents take actions, their logs become verifiable audit evidence. Aegis hash-chains every tool call, signs it with Ed25519 or Post-Quantum algorithms ([FIPS 204](https://csrc.nist.gov/pubs/fips/204/final) ML-DSA-65, [FIPS 205](https://csrc.nist.gov/pubs/fips/205/final) SLH-DSA-128s, Hybrid), and stores it on the [Internet Computer](https://internetcomputer.org) — where tampering is cryptographically detectable.
+When autonomous agents take actions, their logs become verifiable audit evidence. Aegis hash-chains every tool call, signs it with Ed25519 or post-quantum signatures (ML-DSA-65, ML-DSA-87, SLH-DSA-128s, Hybrid), and stores it on the [Internet Computer](https://internetcomputer.org) — where tampering is cryptographically detectable. Not by you, not your ops team, not the hosting provider — any modification breaks the hash chain.
 
 [![PyPI](https://img.shields.io/pypi/v/aegis-ledger-sdk)](https://pypi.org/project/aegis-ledger-sdk/)
+[![Python](https://img.shields.io/pypi/pyversions/aegis-ledger-sdk)](https://pypi.org/project/aegis-ledger-sdk/)
+[![Downloads](https://img.shields.io/pypi/dm/aegis-ledger-sdk)](https://pypi.org/project/aegis-ledger-sdk/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
 
 ```
@@ -33,8 +35,8 @@ client = AegisClient(
 def call_stripe(amount: int, currency: str) -> dict:
     return stripe.PaymentIntent.create(amount=amount, currency=currency)
 
-# Every call is now tamper-evident-logged:
-#   SHA-256(input) + SHA-256(output) + signature + hash-chain link
+# Every call is now tamper-evident logged:
+#   SHA-256(input) + SHA-256(output) + signature (Ed25519/PQ) + hash-chain link
 ```
 
 Verify any entry — no authentication required:
@@ -66,10 +68,11 @@ crew = Crew(agents=[...], tasks=[...], step_callback=aegis_step_callback(client)
 ### OpenAI Agents SDK
 
 ```python
-from aegis.openai_agents import AegisTracingProcessor
+from aegis.openai_agents import AegisAgentTracer
 
-processor = AegisTracingProcessor(client)
-# Automatically traces all agent runs
+tracer = AegisAgentTracer(client)
+with tracer.trace() as tid:
+    result = await Runner.run(agent, "Process this request")
 ```
 
 ### AutoGen / AG2
@@ -78,7 +81,8 @@ processor = AegisTracingProcessor(client)
 from aegis.autogen import AegisAutoGenHook
 
 hook = AegisAutoGenHook(client)
-# Hook into AutoGen message flow
+hook.on_tool_call("search", arguments={"q": "test"}, caller="assistant")
+hook.on_tool_result("search", result="found 5 items", caller="assistant")
 ```
 
 ### Anthropic Agent SDK
@@ -87,7 +91,9 @@ hook = AegisAutoGenHook(client)
 from aegis.anthropic_sdk import AegisAnthropicTracer
 
 tracer = AegisAnthropicTracer(client)
-# Hooks: on_tool_use, on_session_start/end, on_subagent_start/end, on_stop, log_error
+tracer.on_tool_use("search", tool_input={"q": "test"}, tool_response="5 results")
+tracer.on_session_start("session_123")
+tracer.on_subagent_start("sub_1", "researcher")
 ```
 
 ## Async & Batch Support
@@ -118,47 +124,6 @@ client = AegisClient(..., redact_pii=True)  # default
 # PII is replaced with sha256:<128-bit hash> — verifiable but not reversible
 ```
 
-## Post-Quantum Signatures
-
-Four signature algorithms, switchable per key:
-
-| Algorithm | Standard | Key Size | Use Case |
-|-----------|----------|----------|----------|
-| **Ed25519** | RFC 8032 | 32 B | Default, fast, widely supported |
-| **ML-DSA-65** | FIPS 204 | 1952 B | NIST PQ standard (lattice-based) |
-| **SLH-DSA-128s** | FIPS 205 | 32 B | NIST PQ fallback (hash-based) |
-| **Hybrid** | Ed25519 + ML-DSA-65 | 1984 B | Dual-signature, maximum assurance |
-
-```bash
-pip install aegis-ledger-sdk[pq]      # Install PQ dependencies
-aegis keygen ./key.pem --scheme hybrid  # Generate hybrid keypair
-```
-
-```python
-from aegis.crypto import create_scheme
-scheme = create_scheme("hybrid")  # or "ed25519", "ml-dsa-65", "slh-dsa-128s"
-```
-
-On-chain verification: [Verifier Canister](https://dashboard.internetcomputer.org/canister/3sny6-4aaaa-aaaaj-qqoyq-cai)
-
-## Configuration
-
-```bash
-# Set default signing scheme globally
-aegis config set default_scheme hybrid
-
-# Config stored in ~/.aegis/config.toml
-aegis config show
-```
-
-## Migration
-
-Re-sign existing Ed25519 entries with a Post-Quantum algorithm:
-
-```bash
-aegis migrate ./old_key.pem ./new_key.pem --scheme ml-dsa-65
-```
-
 ## How It Works
 
 ```
@@ -171,10 +136,9 @@ Your Agent                    Aegis SDK                    ICP Canister
     |                             |                    verify signature
     |                             |                    check sequence
     |                             |                    chain_hash = SHA-256(
-    |                             |                      prev_hash + ":" +
-    |                             |                      canonical_json(entry)
+    |                             |                      prev_hash + payload
     |                             |                    )
-    |                             |                    store on-chain
+    |                             |                    store in append-only ledger
     |                             |<-- action_id ---------------|
     |<-- return result -----------|                             |
 
@@ -190,7 +154,7 @@ Fail-open: if canister unreachable, entries buffer locally and retry.
 | `tool` | Tool/API name |
 | `duration_ms` | Wall-clock execution time |
 | `chain_hash` | SHA-256 linking to previous entry |
-| `payload_signature` | Signature from your agent's key (Ed25519, ML-DSA-65, SLH-DSA-128s, or Hybrid) |
+| `payload_signature` | Cryptographic signature (Ed25519, ML-DSA-65, ML-DSA-87, SLH-DSA-128s, or Hybrid) |
 | `sequence_number` | Monotonic counter (gap detection) |
 
 **What does NOT get logged:** Raw payloads, API keys, secrets, PII. Only hashes — you control your data.
@@ -210,7 +174,7 @@ Supported frameworks: **EU AI Act Art. 12**, **ISO/IEC 42001**, **AIUC-1** (insu
 
 ## Links
 
-- [Dashboard](https://www.aegis-ledger.com/dashboard)
+- [Dashboard](https://www.aegis-ledger.com)
 - [Documentation](https://www.aegis-ledger.com/docs)
 - [GitHub](https://github.com/VladislavRoss/aegis-ledger-sdk)
 

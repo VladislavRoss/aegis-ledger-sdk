@@ -870,10 +870,11 @@ class TestPQE2ESignatureSchemes:
         assert scheme.verify(payload, sig, combined_pk)
         assert scheme.algorithm_id == "hybrid"
 
-    def test_all_four_schemes_in_supported(self):
-        """PQ-E2E: SUPPORTED_SCHEMES enthält alle 4 Algorithmen."""
+    def test_all_five_schemes_in_supported(self):
+        """PQ-E2E: SUPPORTED_SCHEMES enthält alle 5 Algorithmen."""
         from aegis.crypto import SUPPORTED_SCHEMES
-        assert set(SUPPORTED_SCHEMES.keys()) == {"ed25519", "ml-dsa-65", "slh-dsa-128s", "hybrid"}
+        expected = {"ed25519", "ml-dsa-65", "ml-dsa-87", "slh-dsa-128s", "hybrid"}
+        assert set(SUPPORTED_SCHEMES.keys()) == expected
 
     def test_cross_scheme_verification_fails(self, tmp_pem):
         """PQ-E2E: Ed25519-Signatur darf NICHT mit ML-DSA-65 verifizierbar sein."""
