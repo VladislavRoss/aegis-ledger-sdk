@@ -85,7 +85,7 @@ def _make_client(pem_path, transport=None, session_id="e2e-session", org_id="e2e
 # ============================================================================
 
 class TestCLICommandsE2E:
-    """E2E: CLI Commands — keygen (alle 4 Algos), verify, status, report, migrate."""
+    """E2E: CLI Commands — keygen (alle 5 Algos), verify, status, report, migrate."""
 
     def test_cli_keygen_ed25519(self, tmp_path):
         """CLI E2E: aegis keygen erzeugt Ed25519 PEM + .pub Datei."""
@@ -125,6 +125,28 @@ class TestCLICommandsE2E:
         assert pub_path.exists()
         pub_hex = pub_path.read_text().strip()
         assert len(pub_hex) == 3904  # 1952 bytes * 2
+
+    def test_cli_keygen_mldsa87(self, tmp_path):
+        """CLI E2E: aegis keygen --algorithm ml-dsa-87 erzeugt ML-DSA-87 Keypair."""
+        try:
+            import pqcrypto.sign.ml_dsa_87  # noqa: F401
+        except ImportError:
+            pytest.skip("pqcrypto not installed")
+
+        import sys
+
+        from aegis.cli import main
+
+        key_path = str(tmp_path / "test_mldsa87.bin")
+        argv = ["aegis", "keygen", key_path, "--algorithm", "ml-dsa-87"]
+        with patch.object(sys, "argv", argv):
+            main()
+
+        assert Path(key_path).exists()
+        pub_path = Path(key_path).with_suffix(".pub")
+        assert pub_path.exists()
+        pub_hex = pub_path.read_text().strip()
+        assert len(pub_hex) == 5184  # 2592 bytes * 2
 
     def test_cli_keygen_slhdsa128s(self, tmp_path):
         """CLI E2E: aegis keygen --algorithm slh-dsa-128s erzeugt SLH-DSA Keypair."""
@@ -220,7 +242,7 @@ class TestCLICommandsE2E:
 
 
 # ============================================================================
-# Keygen Functions E2E (alle 4 Algorithmen)
+# Keygen Functions E2E (alle 5 Algorithmen)
 # ============================================================================
 
 class TestKeygenFunctionsE2E:
@@ -256,6 +278,24 @@ class TestKeygenFunctionsE2E:
 
         assert isinstance(sk_bytes, bytes)
         assert len(pub_hex) == 3904
+        assert path.exists()
+        assert path.with_suffix(".pub").exists()
+
+    def test_generate_mldsa87_keypair(self, tmp_path):
+        """Keygen E2E: generate_mldsa87_keypair erzeugt ML-DSA-87 Keypair."""
+        try:
+            import pqcrypto.sign.ml_dsa_87  # noqa: F401
+        except ImportError:
+            pytest.skip("pqcrypto not installed")
+
+        from aegis.crypto import generate_mldsa87_keypair
+
+        path = tmp_path / "mldsa87.bin"
+        sk_bytes, pub_hex = generate_mldsa87_keypair(path)
+
+        assert isinstance(sk_bytes, bytes)
+        assert len(sk_bytes) == 4896
+        assert len(pub_hex) == 5184  # 2592 bytes * 2
         assert path.exists()
         assert path.with_suffix(".pub").exists()
 

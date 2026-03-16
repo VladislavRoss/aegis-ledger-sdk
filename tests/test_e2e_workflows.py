@@ -848,6 +848,26 @@ class TestPQE2ESignatureSchemes:
         assert scheme.public_key_size == 32
         assert scheme.signature_size == 7856
 
+    def test_mldsa87_full_roundtrip(self):
+        """PQ-E2E: ML-DSA-87 Sign → Verify Roundtrip (FIPS 204, CNSA 2.0 Level 5)."""
+        try:
+            from pqcrypto.sign.ml_dsa_87 import generate_keypair
+        except ImportError:
+            pytest.skip("pqcrypto not installed")
+
+        pk_bytes, sk_bytes = generate_keypair()
+        from aegis.crypto import MLDSA87Scheme
+        scheme = MLDSA87Scheme(sk_bytes)
+
+        payload = canonical_json({"action": "pq_test", "algorithm": "ml-dsa-87"})
+        sig = scheme.sign(payload)
+
+        assert sig.startswith("ml-dsa-87:")
+        assert scheme.verify(payload, sig, pk_bytes)
+        assert scheme.algorithm_id == "ml-dsa-87"
+        assert scheme.public_key_size == 2592
+        assert scheme.signature_size == 4627
+
     def test_hybrid_full_roundtrip(self):
         """PQ-E2E: Hybrid (Ed25519 + ML-DSA-65) Sign → Verify Roundtrip (Batch 4)."""
         try:

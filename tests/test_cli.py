@@ -47,6 +47,7 @@ class TestCliHelp:
         result = _run_cli("--help")
         assert "ed25519" in result.stdout
         assert "ml-dsa-65" in result.stdout
+        assert "ml-dsa-87" in result.stdout
         assert "slh-dsa-128s" in result.stdout
         assert "hybrid" in result.stdout
 
@@ -178,6 +179,15 @@ class TestCliKeygenAlgorithms:
         assert result.returncode in (0, 1)
         if result.returncode == 0:
             assert "SLH-DSA" in result.stdout
+
+    def test_keygen_ml_dsa_87(self, tmp_path):
+        """ML-DSA-87 keygen requires pqcrypto — expect either success or ImportError."""
+        key_path = tmp_path / "test_ml87.mldsa87"
+        result = _run_cli("keygen", str(key_path), "--algorithm", "ml-dsa-87")
+        assert result.returncode in (0, 1)
+        if result.returncode == 0:
+            assert "ML-DSA-87" in result.stdout
+            assert key_path.exists()
 
     def test_keygen_hybrid(self, tmp_path):
         """Hybrid keygen requires pqcrypto — expect either success or ImportError."""

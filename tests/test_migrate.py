@@ -10,10 +10,12 @@ from AEGIS_LEDGER.crypto import (
     Ed25519Scheme,
     HybridScheme,
     MLDSA65Scheme,
+    MLDSA87Scheme,
     SLHDSA128sScheme,
     canonical_json,
     generate_keypair,
     generate_mldsa65_keypair,
+    generate_mldsa87_keypair,
     generate_slhdsa128s_keypair,
 )
 from AEGIS_LEDGER.migrate import (
@@ -27,6 +29,12 @@ from AEGIS_LEDGER.migrate import (
 
 def _mldsa65_keypair() -> tuple[bytes, bytes]:
     from pqcrypto.sign.ml_dsa_65 import generate_keypair as _keygen  # type: ignore[import-untyped]
+
+    return _keygen()
+
+
+def _mldsa87_keypair() -> tuple[bytes, bytes]:
+    from pqcrypto.sign.ml_dsa_87 import generate_keypair as _keygen  # type: ignore[import-untyped]
 
     return _keygen()
 
@@ -73,6 +81,21 @@ class TestReSignPayloadHex:
         assert result["new_signature"].startswith("slh-dsa-128s:")
         assert slh_scheme.verify(payload, result["new_signature"], slh_pk)
 
+    def test_ed25519_to_mldsa87(self):
+        ed_key = Ed25519PrivateKey.generate()
+        ed_scheme = Ed25519Scheme(ed_key)
+        payload = canonical_json({"action": "test_mldsa87"})
+        original_sig = ed_scheme.sign(payload)
+
+        ml87_pk, ml87_sk = _mldsa87_keypair()
+        ml87_scheme = MLDSA87Scheme(ml87_sk)
+
+        result = re_sign_payload_hex(payload.hex(), original_sig, ml87_scheme)
+        assert result["original_signature"] == original_sig
+        assert result["new_signature"].startswith("ml-dsa-87:")
+        assert result["algorithm"] == "ml-dsa-87"
+        assert ml87_scheme.verify(payload, result["new_signature"], ml87_pk)
+
     def test_ed25519_to_hybrid(self):
         ed_key = Ed25519PrivateKey.generate()
         ed_scheme = Ed25519Scheme(ed_key)
@@ -98,6 +121,9 @@ class TestDetectSourceAlgorithm:
 
     def test_mldsa65(self):
         assert _detect_source_algorithm("ml-dsa-65:aabbcc") == "ml-dsa-65"
+
+    def test_mldsa87(self):
+        assert _detect_source_algorithm("ml-dsa-87:aabbcc") == "ml-dsa-87"
 
     def test_slhdsa128s(self):
         assert _detect_source_algorithm("slh-dsa-128s:aabbcc") == "slh-dsa-128s"
@@ -177,6 +203,44 @@ class TestMigrateLocal:
 
         assert report["total_entries"] == 1
         assert report["target_algorithm"] == "slh-dsa-128s"
+
+    def test_migrate_ed25519_to_mldsa87(self, tmp_path):
+        ed_key = Ed25519PrivateKey.generate()
+        ed_scheme = Ed25519Scheme(ed_key)
+
+        entries = []
+        for i in range(3):
+            payload = canonical_json({"seq": i, "action": "test_ml87"})
+            sig = ed_scheme.sign(payload)
+            entries.append({
+                "actionId": f"act_{i}",
+                "payloadHex": payload.hex(),
+                "payloadSignature": sig,
+            })
+
+        entries_file = tmp_path / "entries.json"
+        entries_file.write_text(json.dumps(entries), encoding="utf-8")
+
+        ml87_key_file = tmp_path / "test.mldsa87"
+        generate_mldsa87_keypair(ml87_key_file)
+
+        output_file = tmp_path / "migration_ml87.json"
+        report = migrate_local(
+            entries_json=str(entries_file),
+            target_algorithm="ml-dsa-87",
+            signing_key_path=str(ml87_key_file),
+            output_path=str(output_file),
+        )
+
+        assert report["total_entries"] == 3
+        assert report["source_algorithm"] == "ed25519"
+        assert report["target_algorithm"] == "ml-dsa-87"
+        assert output_file.exists()
+
+        saved = json.loads(output_file.read_text(encoding="utf-8"))
+        assert len(saved["entries"]) == 3
+        for entry in saved["entries"]:
+            assert entry["new_signature"].startswith("ml-dsa-87:")
 
     def test_migrate_to_hybrid(self, tmp_path):
         ed_key = Ed25519PrivateKey.generate()
