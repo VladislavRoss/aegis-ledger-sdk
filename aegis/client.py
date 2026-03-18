@@ -767,7 +767,7 @@ class AegisClient:
             derived = str(identity.sender())
             logger.info("Derived org_id from PEM key: %s", derived)
             return derived
-        except Exception as exc:
+        except (ImportError, ValueError, AttributeError, TypeError) as exc:
             logger.warning("Could not derive org_id from PEM (%s) — using 'aaaaa-aa'", exc)
             return "aaaaa-aa"
 
@@ -779,7 +779,7 @@ class AegisClient:
         Sniffs for known frameworks by checking installed packages.
         """
         frameworks: list[str] = []
-        framework_version = "0.0.0"
+        versions: list[str] = []
         model_provider = ""
         model_id = ""
 
@@ -788,7 +788,7 @@ class AegisClient:
             import langchain  # type: ignore[import-untyped,import-not-found]
 
             frameworks.append("langchain")
-            framework_version = getattr(langchain, "__version__", "unknown")
+            versions.append(getattr(langchain, "__version__", "unknown"))
         except ImportError:
             pass
 
@@ -796,7 +796,7 @@ class AegisClient:
             import crewai  # type: ignore[import-untyped]
 
             frameworks.append("crewai")
-            framework_version = getattr(crewai, "__version__", "unknown")
+            versions.append(getattr(crewai, "__version__", "unknown"))
         except ImportError:
             pass
 
@@ -804,7 +804,7 @@ class AegisClient:
             import autogen  # type: ignore[import-untyped,import-not-found]
 
             frameworks.append("autogen")
-            framework_version = getattr(autogen, "__version__", "unknown")
+            versions.append(getattr(autogen, "__version__", "unknown"))
         except ImportError:
             pass
 
@@ -812,7 +812,7 @@ class AegisClient:
             import openai  # type: ignore[import-untyped]
 
             frameworks.append("openai_agents")
-            framework_version = getattr(openai, "__version__", "unknown")
+            versions.append(getattr(openai, "__version__", "unknown"))
         except ImportError:
             pass
 
@@ -820,11 +820,12 @@ class AegisClient:
             import claude_agent_sdk  # type: ignore[import-untyped,import-not-found]
 
             frameworks.append("anthropic_sdk")
-            framework_version = getattr(claude_agent_sdk, "__version__", "unknown")
+            versions.append(getattr(claude_agent_sdk, "__version__", "unknown"))
         except ImportError:
             pass
 
         framework = "+".join(frameworks) if frameworks else "unknown"
+        framework_version = "+".join(versions) if versions else "0.0.0"
 
         runtime = f"python{sys.version_info.major}.{sys.version_info.minor}"
 

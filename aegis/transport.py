@@ -240,7 +240,7 @@ class CanisterTransport:
         for attempt in range(self._config.max_retries):
             try:
                 return self._do_call(method, args, call_type="update")
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 — fail-open retry: any error triggers retry + spill
                 # Skip sleep after last attempt (we're about to spill anyway)
                 if attempt < self._config.max_retries - 1:
                     delay = self._config.retry_base_delay_s * (2**attempt)
@@ -369,7 +369,7 @@ class CanisterTransport:
         try:
             with os.fdopen(fd, "a") as f:
                 f.write(json.dumps(entry, default=str) + "\n")
-        except Exception:
+        except Exception:  # noqa: BLE001 — re-raises after fd cleanup
             # fdopen failed — close the raw fd to prevent leak
             with contextlib.suppress(OSError):
                 os.close(fd)
@@ -453,7 +453,7 @@ class CanisterTransport:
 
                 self._do_call(method, args, call_type="update")
                 drained += 1
-            except Exception:
+            except Exception:  # noqa: BLE001 — fail-open spill replay
                 logger.warning("Spill replay failed for entry", exc_info=True)
                 failed.append(line)
 
