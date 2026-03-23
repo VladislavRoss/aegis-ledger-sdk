@@ -336,6 +336,27 @@ class AegisClient:
             metadata=metadata,
         )
 
+    def log_human_override(
+        self,
+        override_reason: str,
+        input_data: Any = None,
+        output_data: Any = None,
+        duration_ms: int = 0,
+        metadata: dict[str, str] | None = None,
+    ) -> str:
+        """Log a human override of an agent decision."""
+        return self._log(
+            action_type=ActionType.HUMAN_OVERRIDE,
+            tool="",
+            input_data=input_data or {},
+            output_data=output_data or {},
+            duration_ms=duration_ms,
+            status=ActionStatus.SUCCESS,
+            reasoning=override_reason,
+            confidence=0.0,
+            metadata=metadata,
+        )
+
     # ------------------------------------------------------------------
     # PUBLIC API: The @trace decorator
     # ------------------------------------------------------------------

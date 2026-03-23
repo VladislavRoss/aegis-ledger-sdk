@@ -20,7 +20,7 @@ Quickstart:
 Full documentation: https://www.aegis-ledger.com/docs
 """
 
-__version__ = "0.2.0"
+__version__ = "0.2.2"
 
 from aegis.client import AegisClient
 from aegis.config import get_default_scheme, get_signing_key_path, load_config
@@ -59,6 +59,7 @@ from aegis.types import (
     LogEntry,
     VerificationResult,
 )
+from aegis.verify import verify_chain
 
 __all__ = [
     "AegisClient",
@@ -93,4 +94,5 @@ __all__ = [
     "generate_report",
     "sha256_hex",
     "sha256_json",
+    "verify_chain",
 ]

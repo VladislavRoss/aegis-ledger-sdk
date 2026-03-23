@@ -12,14 +12,16 @@ Uses mocked canister transport (no live calls).
 """
 from __future__ import annotations
 
-import time
 from unittest.mock import MagicMock, patch
 
 import pytest
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-from cryptography.hazmat.primitives.serialization import Encoding, NoEncryption, PrivateFormat
-
 from aegis.types import Environment
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from cryptography.hazmat.primitives.serialization import (
+    Encoding,
+    NoEncryption,
+    PrivateFormat,
+)
 
 
 @pytest.fixture
@@ -81,7 +83,9 @@ class TestW06GDPRDeletion:
                 return {"actionId": "act_before_withdraw"}
             raise RuntimeError("DPA withdrawn")
 
-        client, transport = _make_client(tmp_pem, transport_side_effect=dpa_withdraw_after_first, fail_open=False)
+        client, transport = _make_client(
+            tmp_pem, transport_side_effect=dpa_withdraw_after_first, fail_open=False,
+        )
 
         # First call succeeds (DPA active)
         client.log_tool_call(tool="allowed", input_data={}, output_data={}, duration_ms=0)
@@ -95,7 +99,9 @@ class TestW06GDPRDeletion:
         def grace_period_reject(*args, **kwargs):
             raise RuntimeError("Cannot re-accept DPA within 7 days of withdrawal")
 
-        client, transport = _make_client(tmp_pem, transport_side_effect=grace_period_reject, fail_open=False)
+        client, transport = _make_client(
+            tmp_pem, transport_side_effect=grace_period_reject, fail_open=False,
+        )
         with pytest.raises(RuntimeError, match="7 days"):
             client.log_tool_call(tool="reaccept", input_data={}, output_data={}, duration_ms=0)
 
@@ -182,7 +188,9 @@ class TestW06ErrorScenarios:
         def key_revoked(*args, **kwargs):
             raise RuntimeError("API key is revoked")
 
-        client, transport = _make_client(tmp_pem, transport_side_effect=key_revoked, fail_open=False)
+        client, transport = _make_client(
+            tmp_pem, transport_side_effect=key_revoked, fail_open=False,
+        )
         with pytest.raises(RuntimeError, match="revoked"):
             client.log_tool_call(tool="t", input_data={}, output_data={}, duration_ms=0)
 
@@ -191,7 +199,9 @@ class TestW06ErrorScenarios:
         def key_expired(*args, **kwargs):
             raise RuntimeError("API key has expired")
 
-        client, transport = _make_client(tmp_pem, transport_side_effect=key_expired, fail_open=False)
+        client, transport = _make_client(
+            tmp_pem, transport_side_effect=key_expired, fail_open=False,
+        )
         with pytest.raises(RuntimeError, match="expired"):
             client.log_tool_call(tool="t", input_data={}, output_data={}, duration_ms=0)
 
@@ -200,7 +210,9 @@ class TestW06ErrorScenarios:
         def anon_reject(*args, **kwargs):
             raise RuntimeError("Anonymous callers rejected")
 
-        client, transport = _make_client(tmp_pem, transport_side_effect=anon_reject, fail_open=False)
+        client, transport = _make_client(
+            tmp_pem, transport_side_effect=anon_reject, fail_open=False,
+        )
         with pytest.raises(RuntimeError, match="Anonymous"):
             client.log_tool_call(tool="t", input_data={}, output_data={}, duration_ms=0)
 
@@ -214,7 +226,9 @@ class TestW06ErrorScenarios:
                 return {"actionId": f"act_{call_count}"}
             raise RuntimeError("Monthly event limit exceeded")
 
-        client, transport = _make_client(tmp_pem, transport_side_effect=limit_after_5, fail_open=False)
+        client, transport = _make_client(
+            tmp_pem, transport_side_effect=limit_after_5, fail_open=False,
+        )
 
         for i in range(5):
             client.log_tool_call(tool=f"t{i}", input_data={}, output_data={}, duration_ms=0)
