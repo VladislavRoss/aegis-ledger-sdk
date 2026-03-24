@@ -70,7 +70,7 @@ def load_private_key(path: str | Path) -> Ed25519PrivateKey:
     if not key_path.exists():
         raise FileNotFoundError(
             f"Private key not found: {key_path}\n"
-            f"Generate one with: aegis keygen {key_path}"
+            f"Run 'aegis init' or 'aegis keygen {key_path}'"
         )
 
     try:
@@ -84,7 +84,7 @@ def load_private_key(path: str | Path) -> Ed25519PrivateKey:
     if not isinstance(key, Ed25519PrivateKey):
         raise ValueError(
             f"Expected Ed25519 private key, got {type(key).__name__}. "
-            f"Generate a compatible key with: aegis keygen {key_path}"
+            f"Run 'aegis init' or 'aegis keygen {key_path}'"
         )
 
     return key

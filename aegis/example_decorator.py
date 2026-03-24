@@ -6,7 +6,7 @@ functions with automatic tamper-evident logging.
 
 Setup:
     pip install aegis-ledger-sdk
-    aegis keygen ./agent_key.pem
+    aegis init
 """
 
 import json

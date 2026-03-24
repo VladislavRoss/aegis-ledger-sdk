@@ -24,12 +24,8 @@ You can't. Aegis fixes this.
 ```python
 from aegis import AegisClient
 
-client = AegisClient(
-    canister_id="toqqq-lqaaa-aaaae-afc2a-cai",  # From dashboard
-    api_key_id="ak_3f8a9b2c1d4e5f60",            # From dashboard
-    private_key_path="./agent_key.pem",            # aegis keygen
-    agent_id="agent_billing_v2",
-)
+# After: pip install aegis-ledger-sdk && aegis init
+client = AegisClient.from_config()
 
 @client.trace()
 def call_stripe(amount: int, currency: str) -> dict:
@@ -210,7 +206,8 @@ client = AegisClient(..., redact_pii=True)  # default
 ## CLI
 
 ```bash
-aegis keygen ./key.pem                                     # Generate Ed25519 keypair
+aegis init                                                 # Interactive setup (recommended)
+aegis keygen ./key.pem                                     # Generate Ed25519 keypair (advanced)
 aegis keygen ./key.mldsa65 --algorithm ml-dsa-65           # Generate ML-DSA-65 keypair
 aegis keygen ./key --algorithm hybrid                      # Generate Hybrid keypair
 aegis verify <canister_id> <action_id>                     # Verify single entry

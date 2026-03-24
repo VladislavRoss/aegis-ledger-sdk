@@ -11,8 +11,7 @@ append-only, cryptographically verifiable ledger on the Internet Computer.
 
 Setup:
     pip install aegis-ledger-sdk[langchain] langchain-openai langchain-community
-    aegis keygen ./agent_key.pem
-    # Register the public key at https://www.aegis-ledger.com/dashboard
+    aegis init
 """
 
 # ── Aegis: Line 1 of 2 ─────────────────────────────────────────────
@@ -23,12 +22,7 @@ from langchain_community.tools import DuckDuckGoSearchResults
 from langchain_core.prompts import PromptTemplate
 from langchain_openai import ChatOpenAI
 
-client = AegisClient(
-    canister_id="toqqq-lqaaa-aaaae-afc2a-cai",  # Your canister ID
-    api_key_id="ak_3f8a9b2c1d4e5f60",            # From Aegis dashboard
-    private_key_path="./agent_key.pem",            # Generated via: aegis keygen
-    agent_id="agent_research_v1",
-)
+client = AegisClient.from_config()
 handler = AegisCallbackHandler(client)
 # ── Aegis: Line 2 of 2 ─────────────────────────────────────────────
 
