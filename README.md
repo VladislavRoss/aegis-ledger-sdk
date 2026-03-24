@@ -46,6 +46,54 @@ aegis verify toqqq-lqaaa-aaaae-afc2a-cai act_a7f3b2c19e4d
 # VERIFIED — chain hash valid, signature valid
 ```
 
+## Explicit Logging API
+
+```python
+# Tool/API calls
+client.log_tool_call("stripe.charge", input_data={"amount": 5000}, output_data={"id": "ch_xxx"}, duration_ms=340)
+
+# Decisions with reasoning
+client.log_decision("Selected cheapest shipping provider", confidence=0.92, input_data=options)
+
+# Observations (sensor data, API responses)
+client.log_observation(input_data=sensor_reading, output_data=parsed_result)
+
+# Errors
+client.log_error("payment.process", input_data=request, error=exc, duration_ms=120)
+
+# Human overrides (EU AI Act Art. 14 compliance)
+client.log_human_override("Manager approved exception", input_data=original, output_data=override)
+
+# Batch import
+client.log_batch([
+    {"tool": "search", "input_data": "query", "output_data": "results"},
+    {"tool": "summarize", "input_data": "results", "output_data": "summary"},
+])
+```
+
+## Span Grouping
+
+Group related actions under a parent for structured traces:
+
+```python
+with client.span("process_order", reasoning="Customer checkout flow") as span_id:
+    client.log_tool_call("inventory.check", ...)
+    client.log_tool_call("payment.charge", ...)
+    # Both calls have parent_action_id = span_id
+```
+
+## Session Management
+
+```python
+# Start a new session (resets sequence counter)
+new_id = client.new_session()
+
+# Use as context manager for automatic cleanup
+with AegisClient(...) as client:
+    client.log_tool_call(...)
+# Spill buffer drained on exit
+```
+
 ## Framework Integrations
 
 ### LangChain
@@ -96,6 +144,15 @@ tracer.on_session_start("session_123")
 tracer.on_subagent_start("sub_1", "researcher")
 ```
 
+### MCP (Model Context Protocol)
+
+```bash
+pip install aegis-ledger-sdk[mcp]
+aegis-mcp  # starts MCP server (stdio transport)
+```
+
+Any MCP-compatible agent can log actions to the tamper-evident ledger via MCP tools.
+
 ## Async & Batch Support
 
 ```python
@@ -105,12 +162,38 @@ async def fetch_data(url: str) -> dict:
     async with aiohttp.ClientSession() as session:
         resp = await session.get(url)
         return await resp.json()
+```
 
-# Batch-log multiple entries with correct hash-chaining
-client.log_batch([
-    {"tool": "search", "status": "ok", "input_data": "query"},
-    {"tool": "summarize", "status": "ok", "input_data": "results"},
-])
+## Post-Quantum Signatures
+
+Five signature algorithms with crypto-agility:
+
+| Algorithm | Type | Key Size | Use Case |
+|-----------|------|----------|----------|
+| Ed25519 | Classical | 32 B | Default, fast |
+| ML-DSA-65 | Post-Quantum (FIPS 204) | 1952 B | PQ Level 3 |
+| ML-DSA-87 | Post-Quantum (FIPS 204) | 2592 B | CNSA 2.0 Level 5 |
+| SLH-DSA-128s | Hash-based (FIPS 205) | 32 B | Conservative PQ fallback |
+| Hybrid | Ed25519 + ML-DSA-65 | 1984 B | Best of both worlds |
+
+```python
+# Generate PQ keys
+# aegis keygen ./key.mldsa65 --algorithm ml-dsa-65
+# aegis keygen ./key --algorithm hybrid
+
+client = AegisClient(
+    ...,
+    signature_scheme="hybrid",
+    signing_key_path="./key.mldsa65",
+)
+```
+
+Configure via `~/.aegis/config.toml`:
+
+```toml
+[signing]
+default_scheme = "hybrid"
+signing_key_path = "~/.aegis/keys/agent.mldsa65"
 ```
 
 ## PII Protection
@@ -122,6 +205,21 @@ client = AegisClient(..., redact_pii=True)  # default
 
 # Detected patterns: email, phone, IP, SSN, AHV (Swiss), credit cards
 # PII is replaced with sha256:<128-bit hash> — verifiable but not reversible
+```
+
+## CLI
+
+```bash
+aegis keygen ./key.pem                                     # Generate Ed25519 keypair
+aegis keygen ./key.mldsa65 --algorithm ml-dsa-65           # Generate ML-DSA-65 keypair
+aegis keygen ./key --algorithm hybrid                      # Generate Hybrid keypair
+aegis verify <canister_id> <action_id>                     # Verify single entry
+aegis verify-chain <canister_id> <session_id>              # Verify full session chain
+aegis status <canister_id>                                 # Check canister health
+aegis report <canister_id> --format eu-ai-act              # Generate compliance report
+aegis report <canister_id> --format all -o ./reports/      # All formats
+aegis migrate <canister_id> <session_id> --to hybrid       # Re-sign with new algorithm
+aegis version                                              # Print SDK version
 ```
 
 ## How It Works
@@ -142,7 +240,7 @@ Your Agent                    Aegis SDK                    ICP Canister
     |                             |<-- action_id ---------------|
     |<-- return result -----------|                             |
 
-Fail-open: if canister unreachable, entries buffer locally and retry.
+Fail-open: if canister unreachable, entries buffer locally (~/.aegis/spill/) and retry.
 ```
 
 ## What Gets Logged
