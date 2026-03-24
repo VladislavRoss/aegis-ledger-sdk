@@ -81,22 +81,8 @@ select = ["E", "F", "I", "N", "W", "UP", "B", "SIM", "TCH"]
 "tests/__init__.py" = ["N999"]
 "tests/test_*.py" = ["N806"]
 
-[tool.hatch.build]
-exclude = [
-  "tests/",
-  "*.md",
-  "*.txt",
-  "*.pptx",
-  ".gitignore",
-  "example_*.py",
-  "setup.py",
-  "pyproject.toml",
-  "mnt/",
-]
-
 [tool.hatch.build.targets.wheel]
-packages = ["."]
-sources = {"." = "aegis"}
+packages = ["aegis"]
 
 [tool.pytest.ini_options]
 markers = [
