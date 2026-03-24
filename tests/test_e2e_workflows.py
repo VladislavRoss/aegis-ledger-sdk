@@ -67,7 +67,7 @@ def _make_mock_transport():
     return transport
 
 
-def _make_client(pem_path, transport=None, session_id="e2e-session", org_id="e2e-org",
+def _make_client(pem_path, transport=None, session_id="e2e-session", org_id="un4fu-tqaaa-aaaab-qadjq-cai",
                  fail_open=True, api_key_id="ak_e2e"):
     """Create AegisClient with mocked/real transport."""
     with (
@@ -104,7 +104,7 @@ class TestW02AgentIntegration:
         client, transport = _make_client(tmp_pem)
 
         # Step 1-3: Client konfiguriert
-        assert client._org_id == "e2e-org"
+        assert client._org_id == "un4fu-tqaaa-aaaab-qadjq-cai"
         assert client._api_key_id == "ak_e2e"
         assert client._agent_id == "e2e-test-agent"
 
@@ -456,7 +456,8 @@ class TestW07MultiAgentMultiSession:
             c, t = _make_client(tmp_pem, session_id=f"org_session_{i}")
             c.log_tool_call(tool="org_test", input_data={}, output_data={}, duration_ms=0)
             args = t.call_update.call_args[0][1]
-            assert args[1]["value"] == "e2e-org", f"Agent {i} must use same org"
+            from aegis.transport import _principal_text_to_bytes
+            assert args[1]["value"] == _principal_text_to_bytes("un4fu-tqaaa-aaaab-qadjq-cai"), f"Agent {i} must use same org"
 
 
 # ============================================================================
@@ -590,7 +591,7 @@ class TestW09FailOpenSpillDrain:
         entries = []
         for i in range(5):
             vals = [
-                f"act_{i}", "org-1", "agent-1", "sess-1", i,
+                f"act_{i}", "rrkah-fqaaa-aaaaa-aaaaq-cai", "agent-1", "sess-1", i,
                 {"toolCall": None}, "search", "sha256:in", "sha256:out",
                 "", "", 100, "success", "", "", 0.9, "unknown", "", now_ms,
                 "ed25519:abc", "chainabc", "", "payload", "ak_test",

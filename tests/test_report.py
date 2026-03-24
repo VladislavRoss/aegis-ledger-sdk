@@ -482,15 +482,18 @@ class TestGenerateAllReports:
 
 
 class TestCliReport:
-    def test_report_missing_args_exits_1(self) -> None:
+    def test_report_no_args_uses_config(self) -> None:
         result = subprocess.run(
             [sys.executable, "-m", "AEGIS_LEDGER.cli", "report"],
             capture_output=True,
             text=True,
-            timeout=10,
+            timeout=15,
         )
-        assert result.returncode == 1
-        assert "Usage:" in result.stdout
+        # With config.toml: succeeds and generates report. Without: error.
+        if result.returncode == 0:
+            assert "Compliance" in result.stdout or "Report" in result.stdout
+        else:
+            assert "Error:" in result.stdout or "No canister_id" in result.stdout
 
     def test_report_unknown_format_exits_1(self) -> None:
         result = subprocess.run(

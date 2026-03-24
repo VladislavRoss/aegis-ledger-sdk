@@ -152,10 +152,15 @@ def _fetch_canister_data(
     canister_id: str,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Fetch stats and health from a live canister via getHealth endpoint."""
+    from aegis.config import load_config
     from aegis.transport import CanisterTransport, TransportConfig
 
+    # Read config for private_key_path (needed for authenticated queries)
+    cfg = load_config()
+    pk_path = cfg.get("private_key_path")
+
     try:
-        config = TransportConfig(canister_id=canister_id)
+        config = TransportConfig(canister_id=canister_id, private_key_path=pk_path)
         transport = CanisterTransport(config)
 
         raw = transport.call_query("getHealth", [])
@@ -164,14 +169,34 @@ def _fetch_canister_data(
             f"Failed to fetch canister data from {canister_id}: {exc}"
         ) from exc
 
-    # Map HealthInfo fields to stats/health dicts for report builders.
-    # Fields: totalEntries, totalKeys, totalOrgs, heapBytes, etc.
+    # ic-py returns Candid field hashes instead of names.
+    # Map known hashes to field names for HealthInfo record.
+    _HEALTH_HASH_MAP = {
+        "_576569836": "totalEntries",
+        "_1673630680": "totalKeys",
+        "_1718631411": "totalOrgs",
+        "_492408735": "heapBytes",
+        "_3726629775": "cyclesBalance",
+        "_4170640857": "deferredVerifications",
+    }
+
+    mapped: dict[str, Any] = {}
+    raw_dict = raw.get("raw", raw) if isinstance(raw, dict) else raw
+    if isinstance(raw_dict, dict):
+        for k, v in raw_dict.items():
+            name = _HEALTH_HASH_MAP.get(str(k), str(k))
+            mapped[name] = v
+
+    total_entries = mapped.get("totalEntries", 0)
+    total_keys = mapped.get("totalKeys", 0)
+    total_orgs = mapped.get("totalOrgs", 0)
+
     generated_at = _now_iso()
     stats: dict[str, Any] = {
-        "total_actions": raw.get("totalEntries", 0),
-        "chain_length": raw.get("totalEntries", 0),
-        "active_api_keys": raw.get("totalKeys", 0),
-        "total_agents": raw.get("totalOrgs", 0),
+        "total_actions": total_entries,
+        "chain_length": total_entries,
+        "active_api_keys": total_keys,
+        "total_agents": total_orgs,
         "total_sessions": 0,
         "revoked_api_keys": 0,
         "latest_chain_hash": "N/A",
@@ -179,7 +204,7 @@ def _fetch_canister_data(
         "coverage_end": generated_at,
     }
     health: dict[str, Any] = {
-        "chain_valid": True,
+        "chain_valid": total_entries > 0,
         "status": "healthy",
         "uptime_seconds": 0,
     }

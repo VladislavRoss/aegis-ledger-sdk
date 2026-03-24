@@ -35,7 +35,7 @@ def test_unknown_raises():
 
 _FULL_ARGS = dict(
     action_id="act-123",
-    org_id="aaaaa-aa",
+    org_id="un4fu-tqaaa-aaaab-qadjq-cai",
     agent_id="agent-1",
     session_id="sess-1",
     sequence_number=1,
@@ -261,7 +261,7 @@ class TestSpillBuffer:
         entries = []
         for i in range(3):
             vals = [
-                f"act_{i}", "org-1", "agent-1", "sess-1", i,
+                f"act_{i}", "rrkah-fqaaa-aaaaa-aaaaq-cai", "agent-1", "sess-1", i,
                 {"toolCall": None}, "search", "sha256:in", "sha256:out",
                 "", "", 100, "success", "", "", 0.9, "unknown", "", now_ms,
                 "ed25519:abc", "chainabc", "", "payload", "ak_test",
@@ -301,7 +301,7 @@ class TestSpillBuffer:
         now_ms = int(_time.time() * 1000)
         spill_file = tmp_path / "drain-fail.jsonl"
         _dummy_values = [
-            "act_0", "org-1", "agent-1", "sess-1", 0,
+            "act_0", "rrkah-fqaaa-aaaaa-aaaaq-cai", "agent-1", "sess-1", 0,
             {"toolCall": None}, "search", "sha256:in", "sha256:out",
             "", "", 100, "success", "", "", 0.9, "unknown", "", now_ms,
             "ed25519:abc", "chainabc", "", "payload", "ak_test",

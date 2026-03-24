@@ -2,9 +2,11 @@
 
 from AEGIS_LEDGER.config import (
     _VALID_SCHEMES,
+    get_client_config,
     get_default_scheme,
     get_signing_key_path,
     load_config,
+    write_config,
 )
 
 
@@ -95,6 +97,182 @@ class TestValidSchemes:
 
     def test_all_five_schemes(self):
         assert {"ed25519", "ml-dsa-65", "ml-dsa-87", "slh-dsa-128s", "hybrid"} == _VALID_SCHEMES
+
+
+class TestGetClientConfig:
+    """Test get_client_config()."""
+
+    def test_empty_config(self):
+        assert get_client_config({}) == {}
+
+    def test_full_client_section(self):
+        cfg = {
+            "client": {
+                "canister_id": "toqqq-lqaaa-aaaae-afc2a-cai",
+                "api_key_id": "ak_test",
+                "agent_id": "my-agent",
+                "private_key_path": "/tmp/key.pem",
+            }
+        }
+        result = get_client_config(cfg)
+        assert result["canister_id"] == "toqqq-lqaaa-aaaae-afc2a-cai"
+        assert result["api_key_id"] == "ak_test"
+        assert result["agent_id"] == "my-agent"
+        assert result["private_key_path"] == "/tmp/key.pem"
+
+    def test_partial_client_section(self):
+        cfg = {"client": {"canister_id": "abc"}}
+        result = get_client_config(cfg)
+        assert result == {"canister_id": "abc"}
+        assert "api_key_id" not in result
+
+    def test_client_not_dict(self):
+        cfg = {"client": "invalid"}
+        assert get_client_config(cfg) == {}
+
+    def test_ignores_unknown_keys(self):
+        cfg = {"client": {"canister_id": "abc", "unknown_key": "val"}}
+        result = get_client_config(cfg)
+        assert result == {"canister_id": "abc"}
+
+
+class TestWriteConfig:
+    """Test write_config()."""
+
+    def test_creates_config_file(self, tmp_path):
+        cfg_path = tmp_path / "config.toml"
+        result = write_config(
+            canister_id="toqqq-lqaaa-aaaae-afc2a-cai",
+            api_key_id="ak_test",
+            agent_id="my-agent",
+            private_key_path="/tmp/key.pem",
+            config_path=cfg_path,
+        )
+        assert result == cfg_path
+        assert cfg_path.exists()
+        content = cfg_path.read_text(encoding="utf-8")
+        assert 'canister_id = "toqqq-lqaaa-aaaae-afc2a-cai"' in content
+        assert 'api_key_id = "ak_test"' in content
+
+    def test_roundtrip(self, tmp_path):
+        cfg_path = tmp_path / "config.toml"
+        write_config(
+            canister_id="toqqq-lqaaa-aaaae-afc2a-cai",
+            api_key_id="ak_test",
+            agent_id="my-agent",
+            private_key_path="/tmp/key.pem",
+            config_path=cfg_path,
+        )
+        cfg = load_config(config_path=cfg_path)
+        result = get_client_config(cfg)
+        assert result["canister_id"] == "toqqq-lqaaa-aaaae-afc2a-cai"
+        assert result["api_key_id"] == "ak_test"
+        assert result["agent_id"] == "my-agent"
+        assert result["private_key_path"] == "/tmp/key.pem"
+
+    def test_preserves_signing_section(self, tmp_path):
+        cfg_path = tmp_path / "config.toml"
+        cfg_path.write_text(
+            '[signing]\ndefault_scheme = "hybrid"\n', encoding="utf-8"
+        )
+        write_config(canister_id="abc", api_key_id="ak_1", config_path=cfg_path)
+        cfg = load_config(config_path=cfg_path)
+        assert cfg["signing"]["default_scheme"] == "hybrid"
+        assert cfg["client"]["canister_id"] == "abc"
+
+    def test_creates_parent_dirs(self, tmp_path):
+        cfg_path = tmp_path / "deep" / "nested" / "config.toml"
+        write_config(canister_id="abc", config_path=cfg_path)
+        assert cfg_path.exists()
+
+    def test_empty_values_not_written(self, tmp_path):
+        cfg_path = tmp_path / "config.toml"
+        write_config(canister_id="abc", config_path=cfg_path)
+        content = cfg_path.read_text(encoding="utf-8")
+        assert "api_key_id" not in content
+
+
+class TestFromConfig:
+    """Test AegisClient.from_config()."""
+
+    def test_from_config_missing_file_raises(self, tmp_path):
+        import pytest
+
+        from AEGIS_LEDGER.client import AegisClient
+
+        with pytest.raises(FileNotFoundError, match="aegis init"):
+            AegisClient.from_config(config_path=tmp_path / "nope.toml")
+
+    def test_from_config_missing_fields_raises(self, tmp_path):
+        import pytest
+
+        from AEGIS_LEDGER.client import AegisClient
+
+        cfg_path = tmp_path / "config.toml"
+        cfg_path.write_text('[client]\nagent_id = "test"\n', encoding="utf-8")
+        with pytest.raises(ValueError, match="canister_id"):
+            AegisClient.from_config(config_path=cfg_path)
+
+    def test_from_config_success(self, tmp_path):
+        from AEGIS_LEDGER.client import AegisClient
+        from AEGIS_LEDGER.crypto import generate_keypair
+
+        pem = tmp_path / "key.pem"
+        generate_keypair(pem)
+        pem_posix = str(pem).replace("\\", "/")
+
+        cfg_path = tmp_path / "config.toml"
+        cfg_path.write_text(
+            f'[client]\ncanister_id = "aaaaa-aa"\n'
+            f'api_key_id = "ak_test"\n'
+            f'agent_id = "my-agent"\n'
+            f'private_key_path = "{pem_posix}"\n',
+            encoding="utf-8",
+        )
+        client = AegisClient.from_config(config_path=cfg_path)
+        assert client._canister_id == "aaaaa-aa"
+        assert client._api_key_id == "ak_test"
+        assert client._agent_id == "my-agent"
+
+    def test_from_config_override_agent_id(self, tmp_path):
+        from AEGIS_LEDGER.client import AegisClient
+        from AEGIS_LEDGER.crypto import generate_keypair
+
+        pem = tmp_path / "key.pem"
+        generate_keypair(pem)
+        pem_posix = str(pem).replace("\\", "/")
+
+        cfg_path = tmp_path / "config.toml"
+        cfg_path.write_text(
+            f'[client]\ncanister_id = "aaaaa-aa"\n'
+            f'api_key_id = "ak_test"\n'
+            f'agent_id = "default-agent"\n'
+            f'private_key_path = "{pem_posix}"\n',
+            encoding="utf-8",
+        )
+        client = AegisClient.from_config(config_path=cfg_path, agent_id="custom-agent")
+        assert client._agent_id == "custom-agent"
+
+    def test_from_config_via_write_config(self, tmp_path):
+        """Full roundtrip: write_config → from_config."""
+        from AEGIS_LEDGER.client import AegisClient
+        from AEGIS_LEDGER.crypto import generate_keypair
+
+        pem = tmp_path / "key.pem"
+        generate_keypair(pem)
+        pem_posix = str(pem).replace("\\", "/")
+
+        cfg_path = tmp_path / "config.toml"
+        write_config(
+            canister_id="aaaaa-aa",
+            api_key_id="ak_roundtrip",
+            agent_id="roundtrip-agent",
+            private_key_path=pem_posix,
+            config_path=cfg_path,
+        )
+        client = AegisClient.from_config(config_path=cfg_path)
+        assert client._api_key_id == "ak_roundtrip"
+        assert client._agent_id == "roundtrip-agent"
 
 
 class TestClientConfigIntegration:

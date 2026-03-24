@@ -10,6 +10,7 @@ Supported keys::
     api_key_id = "ak_my_key"
     agent_id = "my-agent"
     private_key_path = "~/.aegis/agent_key.pem"
+    org_id = "xxxxx-xxxxx-..."  # Your II Principal (from Dashboard)
 
     [signing]
     default_scheme = "hybrid"        # ed25519 | ml-dsa-65 | ml-dsa-87 | slh-dsa-128s | hybrid
@@ -111,7 +112,7 @@ def get_client_config(config: dict[str, Any] | None = None) -> dict[str, str]:
     if not isinstance(client, dict):
         return {}
     result: dict[str, str] = {}
-    for key in ("canister_id", "api_key_id", "agent_id", "private_key_path"):
+    for key in ("canister_id", "api_key_id", "agent_id", "private_key_path", "org_id"):
         val = client.get(key)
         if val is not None:
             result[key] = str(val)
@@ -124,6 +125,7 @@ def write_config(
     api_key_id: str = "",
     agent_id: str = "",
     private_key_path: str = "",
+    org_id: str = "",
     signing_scheme: str = "",
     signing_key_path: str = "",
     config_path: Path | None = None,
@@ -152,6 +154,8 @@ def write_config(
         client["agent_id"] = agent_id
     if private_key_path:
         client["private_key_path"] = private_key_path
+    if org_id:
+        client["org_id"] = org_id
 
     if signing_scheme:
         signing["default_scheme"] = signing_scheme

@@ -290,6 +290,9 @@ class AegisClient:
         kwargs["agent_id"] = agent_id or overrides.pop(
             "agent_id", client_cfg.get("agent_id", "agent")
         )
+        cfg_org_id = client_cfg.get("org_id", "")
+        if cfg_org_id:
+            kwargs["org_id"] = overrides.pop("org_id", cfg_org_id)
         if session_id:
             kwargs["session_id"] = session_id
         kwargs.update(overrides)

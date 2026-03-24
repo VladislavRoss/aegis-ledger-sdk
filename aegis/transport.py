@@ -30,6 +30,31 @@ logger = logging.getLogger("aegis.transport")
 _ALLOWED_SPILL_METHODS: frozenset[str] = frozenset({"addLedgerEntry"})
 _MAX_SPILL_ENTRIES: int = 1000
 
+
+def _principal_text_to_bytes(text: str) -> bytes:
+    """Convert a Principal text (e.g. 'xxxxx-xxxxx-...') to raw bytes.
+
+    Self-contained implementation — does NOT monkey-patch ic-py.
+    ic-py 1.0.1 has ``raise "string"`` (Python 2 syntax) in Principal.from_str
+    which crashes on Python 3.13. This function replaces that entirely.
+    """
+    import base64
+    import math
+
+    if isinstance(text, bytes):
+        return text
+
+    _CRC_LEN = 4
+    s1 = text.replace("-", "")
+    pad_len = math.ceil(len(s1) / 8) * 8 - len(s1)
+    try:
+        b = base64.b32decode(s1.upper().encode() + b"=" * pad_len)
+    except Exception as exc:
+        raise ValueError(f"Invalid principal text: {text!r}") from exc
+    if len(b) < _CRC_LEN:
+        raise ValueError(f"Principal too short: {text!r}")
+    return b[_CRC_LEN:]
+
 _ACTION_TYPE_MAP: dict[str, str] = {
     "tool_call": "toolCall",
     "decision": "decision",
@@ -109,7 +134,7 @@ def _build_add_ledger_entry_args(
 
     return [
         {"type": Types.Text,           "value": action_id},
-        {"type": Types.Principal,      "value": org_id},   # org_id als Principal-String
+        {"type": Types.Principal,      "value": _principal_text_to_bytes(org_id)},
         {"type": Types.Text,           "value": agent_id},
         {"type": Types.Text,           "value": session_id},
         {"type": Types.Nat,            "value": sequence_number},

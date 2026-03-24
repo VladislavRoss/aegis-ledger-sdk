@@ -2,6 +2,18 @@
 
 All notable changes to `aegis-ledger-sdk` are documented here.
 
+## [0.2.4] — 2026-03-24
+
+### Fixed
+- **CLI config.toml support** — `verify`, `status`, `report`, `verify-chain` now read `~/.aegis/config.toml` for canister_id and private_key_path. No more random identity / empty results.
+- **Candid field-hash mapping** — CLI commands now correctly map ic-py hash keys (e.g. `_576569836`) to field names (`totalEntries`). Fixes N/A output in `aegis status` and "unknown reason" in `aegis verify`.
+- **Health hash swap** — `totalKeys` and `totalOrgs` hashes were swapped in report.py. Now computed from Candid spec.
+- **CLI args now optional** — `aegis status`, `aegis report`, `aegis verify <action_id>` work without explicit canister_id if configured.
+
+### Changed
+- `aegis status` output shows human-readable heap (MB) and cycles (T) formatting.
+- `aegis verify` shows signature algorithm detail in success message.
+
 ## [0.2.2] — 2026-03-23
 
 ### Fixed

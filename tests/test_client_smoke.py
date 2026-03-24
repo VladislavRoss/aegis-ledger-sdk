@@ -6,6 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch
 
 import pytest
+from aegis.transport import _principal_text_to_bytes
 from aegis.types import Environment
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
@@ -32,7 +33,7 @@ def _make_client():
             api_key_id="ak_test",
             private_key_path="./fake_key.pem",
             agent_id="test-agent",
-            org_id="test-org",
+            org_id="un4fu-tqaaa-aaaab-qadjq-cai",
             session_id="test-session",
             environment=Environment(framework="test"),
         )
@@ -118,7 +119,7 @@ def test_org_id_passed_to_candid_args():
             api_key_id="ak_test",
             private_key_path="./fake_key.pem",
             agent_id="test-agent",
-            org_id="myorg-principal-xyz",
+            org_id="un4fu-tqaaa-aaaab-qadjq-cai",
             session_id="test-session",
             environment=Environment(framework="test"),
         )
@@ -126,8 +127,8 @@ def test_org_id_passed_to_candid_args():
 
         call_args = mock_transport_instance.call_update.call_args
         args_list = call_args[0][1]
-        org_id_arg = args_list[1]  # Position 1 = orgId
-        assert org_id_arg["value"] == "myorg-principal-xyz"
+        org_id_arg = args_list[1]  # Position 1 = orgId (bytes for Candid Principal)
+        assert org_id_arg["value"] == _principal_text_to_bytes("un4fu-tqaaa-aaaab-qadjq-cai")
 
 
 def test_org_id_passed_as_configured():
@@ -137,7 +138,7 @@ def test_org_id_passed_as_configured():
 
     call_args = mock_transport.call_update.call_args
     args_list = call_args[0][1]
-    assert args_list[1]["value"] == "test-org"
+    assert args_list[1]["value"] == _principal_text_to_bytes("un4fu-tqaaa-aaaab-qadjq-cai")
 
 
 def test_log_error_uses_error_variant():
@@ -236,7 +237,7 @@ def test_session_id_none_generates_uuid():
             api_key_id="ak_test",
             private_key_path="./fake_key.pem",
             agent_id="test-agent",
-            org_id="test-org",
+            org_id="un4fu-tqaaa-aaaab-qadjq-cai",
             session_id=None,
             environment=Environment(framework="test"),
         )
@@ -260,7 +261,7 @@ def test_metadata_rejects_non_string_values():
                 api_key_id="ak_test",
                 private_key_path="./fake_key.pem",
                 agent_id="test-agent",
-                org_id="test-org",
+                org_id="un4fu-tqaaa-aaaab-qadjq-cai",
                 metadata={"key": 123},  # type: ignore[dict-item]
                 environment=Environment(framework="test"),
             )
@@ -284,7 +285,7 @@ def test_fail_open_true_does_not_raise():
             api_key_id="ak_test",
             private_key_path="./fake_key.pem",
             agent_id="test-agent",
-            org_id="test-org",
+            org_id="un4fu-tqaaa-aaaab-qadjq-cai",
             session_id="test-session",
             fail_open=True,
             environment=Environment(framework="test"),

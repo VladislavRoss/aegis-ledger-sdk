@@ -6,13 +6,66 @@ Commands:
     aegis keygen ./my_agent_key.pem    Generate an Ed25519 keypair
     aegis verify <canister_id> <action_id>  Verify a single ledger entry
     aegis verify-chain <canister_id> <session_id>  Verify full session chain offline
-    aegis status <canister_id>          Check canister health
-    aegis report <canister_id>          Generate compliance report
+    aegis status [canister_id]          Check canister health
+    aegis report [canister_id]          Generate compliance report
 """
 
 from __future__ import annotations
 
 import sys
+
+
+# ---------------------------------------------------------------------------
+# Candid hash-key mapping (ic-py returns field hashes, not names)
+# ---------------------------------------------------------------------------
+
+_HEALTH_HASH_MAP: dict[str, str] = {
+    "_576569836": "totalEntries",
+    "_1673630680": "totalKeys",
+    "_1718631411": "totalOrgs",
+    "_492408735": "heapBytes",
+    "_3726629775": "cyclesBalance",
+    "_4170640857": "deferredVerifications",
+}
+
+_VERIFY_HASH_MAP: dict[str, str] = {
+    "_3776271665": "actionId",
+    "_3460176050": "isValid",
+    "_1390137228": "storedChainHash",
+    "_2601806392": "previousChainHash",
+    "_3248078826": "sequenceNumber",
+    "_2584819143": "message",
+}
+
+
+def _map_candid_keys(raw: dict, hash_map: dict[str, str]) -> dict:
+    """Map Candid field-hash keys to human-readable names."""
+    mapped: dict = {}
+    for k, v in raw.items():
+        name = hash_map.get(str(k), str(k))
+        mapped[name] = v
+    return mapped
+
+
+def _transport_from_config(canister_id: str | None = None):
+    """Create a CanisterTransport using config.toml identity.
+
+    Falls back to the provided canister_id, or reads it from config.
+    """
+    from aegis.config import get_client_config, load_config
+    from aegis.transport import CanisterTransport, TransportConfig
+
+    cfg = load_config()
+    client_cfg = get_client_config(cfg)
+    pk_path = client_cfg.get("private_key_path")
+    cid = canister_id or client_cfg.get("canister_id", "")
+
+    if not cid:
+        print("Error: No canister_id provided and none found in ~/.aegis/config.toml")
+        sys.exit(1)
+
+    config = TransportConfig(canister_id=cid, private_key_path=pk_path)
+    return CanisterTransport(config), cid
 
 
 def main() -> None:
@@ -60,10 +113,10 @@ Commands:
   init [--algorithm ALG]            Setup wizard (generates key + config)
   test                              Send a test entry and verify on-chain
   keygen <path> [--algorithm ALG]   Generate keypair for agent signing
-  verify <canister_id> <action_id>  Verify a ledger entry's chain hash
-  verify-chain <canister_id> <sid>  Verify full session chain offline
-  status <canister_id>              Check canister health and chain stats
-  report <canister_id> [--format F] Generate compliance report
+  verify [canister_id] <action_id>  Verify a ledger entry's chain hash
+  verify-chain [canister_id] <sid>  Verify full session chain offline
+  status [canister_id]              Check canister health and chain stats
+  report [canister_id] [--format F] Generate compliance report
   migrate [options]                 Re-sign entries with a new algorithm
   version                           Print SDK version
 
@@ -276,6 +329,12 @@ def _cmd_init(args: list[str]) -> None:
         api_key_id = suggested_id
 
     print()
+    print("  Your Principal is shown in the Dashboard top-right (after login).")
+    org_id = _prompt("  Enter your Principal from Dashboard: ").strip()
+    if not org_id:
+        print("  [WARN] No Principal entered — org_id will be derived from PEM (may not match II login).")
+
+    print()
 
     # --- Step 4: Write config ---
     print("Step 4/4: Writing config...")
@@ -284,6 +343,7 @@ def _cmd_init(args: list[str]) -> None:
         api_key_id=api_key_id,
         agent_id=api_key_id,
         private_key_path=str(key_path),
+        org_id=org_id,
         signing_scheme=algorithm if algorithm != "ed25519" else "",
         signing_key_path=signing_key_path,
     )
@@ -457,27 +517,34 @@ def _cmd_keygen(args: list[str]) -> None:
 
 def _cmd_verify(args: list[str]) -> None:
     """Verify a ledger entry via on-chain verifyEntry query."""
-    if len(args) < 2:
-        print("Usage: aegis verify <canister_id> <action_id>")
+    if len(args) < 1:
+        print("Usage: aegis verify [canister_id] <action_id>")
+        print("  canister_id is optional if configured in ~/.aegis/config.toml")
         sys.exit(1)
 
-    canister_id, action_id = args[0], args[1]
+    # Support both: aegis verify <action_id>  and  aegis verify <canister_id> <action_id>
+    if len(args) >= 2 and "-" in args[0]:
+        canister_id_arg, action_id = args[0], args[1]
+    else:
+        canister_id_arg, action_id = None, args[0]
 
     try:
-        from aegis.transport import CanisterTransport, TransportConfig
         from ic.candid import Types  # type: ignore[import-untyped]
 
-        config = TransportConfig(canister_id=canister_id)
-        transport = CanisterTransport(config)
-        result = transport.call_query(
+        transport, canister_id = _transport_from_config(canister_id_arg)
+        raw = transport.call_query(
             "verifyEntry", [{"type": Types.Text, "value": action_id}]
         )
+        result = _map_candid_keys(raw, _VERIFY_HASH_MAP) if isinstance(raw, dict) else raw
 
         if result.get("isValid"):
             print(f"[OK] VERIFIED — Entry {action_id} chain hash is valid")
             print(f"  Chain hash: {result.get('storedChainHash', 'N/A')}")
             print(f"  Previous:   {result.get('previousChainHash', 'N/A')}")
             print(f"  Sequence:   {result.get('sequenceNumber', 'N/A')}")
+            msg = result.get("message", "")
+            if msg:
+                print(f"  Detail:     {msg}")
         else:
             print(f"[FAIL] INVALID — Entry {action_id}")
             msg = result.get("message", "unknown reason")
@@ -492,22 +559,25 @@ def _cmd_verify(args: list[str]) -> None:
 
 def _cmd_verify_chain(args: list[str]) -> None:
     """Verify full session hash-chain offline via replay."""
-    if len(args) < 2:
-        print("Usage: aegis verify-chain <canister_id> <session_id>")
+    if len(args) < 1:
+        print("Usage: aegis verify-chain [canister_id] <session_id>")
         print()
         print("Fetches all entries for a session and re-computes every")
         print("chain hash locally. No trust in the canister required.")
+        print("canister_id is optional if configured in ~/.aegis/config.toml")
         sys.exit(1)
 
-    canister_id, session_id = args[0], args[1]
+    # Support both: aegis verify-chain <session_id>  and  aegis verify-chain <canister_id> <session_id>
+    if len(args) >= 2 and "-" in args[0]:
+        canister_id_arg, session_id = args[0], args[1]
+    else:
+        canister_id_arg, session_id = None, args[0]
 
     try:
-        from aegis.transport import CanisterTransport, TransportConfig
         from aegis.verify import verify_chain
         from ic.candid import Types  # type: ignore[import-untyped]
 
-        config = TransportConfig(canister_id=canister_id)
-        transport = CanisterTransport(config)
+        transport, canister_id = _transport_from_config(canister_id_arg)
         entries = transport.call_query(
             "getTrace", [{"type": Types.Text, "value": session_id}]
         )
@@ -540,25 +610,27 @@ def _cmd_verify_chain(args: list[str]) -> None:
 
 def _cmd_status(args: list[str]) -> None:
     """Check canister health via on-chain getHealth query."""
-    if not args:
-        print("Usage: aegis status <canister_id>")
-        sys.exit(1)
-
-    canister_id = args[0]
+    canister_id_arg = args[0] if args else None
 
     try:
-        from aegis.transport import CanisterTransport, TransportConfig
-
-        config = TransportConfig(canister_id=canister_id)
-        transport = CanisterTransport(config)
-        health = transport.call_query("getHealth", [])
+        transport, canister_id = _transport_from_config(canister_id_arg)
+        raw = transport.call_query("getHealth", [])
+        health = _map_candid_keys(raw, _HEALTH_HASH_MAP) if isinstance(raw, dict) else raw
 
         print(f"Aegis Canister: {canister_id}")
         print(f"  Total entries:    {health.get('totalEntries', 'N/A')}")
         print(f"  API keys:         {health.get('totalKeys', 'N/A')}")
         print(f"  Organizations:    {health.get('totalOrgs', 'N/A')}")
-        print(f"  Heap bytes:       {health.get('heapBytes', 'N/A')}")
-        print(f"  Cycles balance:   {health.get('cyclesBalance', 'N/A')}")
+        heap = health.get("heapBytes", "N/A")
+        if isinstance(heap, (int, float)) and heap > 0:
+            print(f"  Heap:             {heap:,} bytes ({heap / 1_048_576:.1f} MB)")
+        else:
+            print(f"  Heap bytes:       {heap}")
+        cycles = health.get("cyclesBalance", "N/A")
+        if isinstance(cycles, (int, float)) and cycles > 0:
+            print(f"  Cycles balance:   {cycles:,.0f} ({cycles / 1_000_000_000_000:.2f} T)")
+        else:
+            print(f"  Cycles balance:   {cycles}")
         deferred = health.get("deferredVerifications", 0)
         if deferred:
             print(f"  Deferred verif.:  {deferred}")
@@ -570,15 +642,11 @@ def _cmd_status(args: list[str]) -> None:
 
 def _cmd_report(args: list[str]) -> None:
     """Generate compliance report."""
-    if not args:
-        print("Usage: aegis report <canister_id> [--format eu-ai-act|iso-42001|aiuc-1|all]")
-        print()
-        print("Options:")
-        print("  --format F   Report format (default: eu-ai-act)")
-        print("  -o PATH      Output file or directory (for --format all)")
-        sys.exit(1)
-
-    canister_id = args[0]
+    # canister_id is optional — read from config if not provided
+    canister_id_arg: str | None = None
+    if args and not args[0].startswith("-"):
+        canister_id_arg = args[0]
+        args = args[1:]
     format_str = "eu-ai-act"
     output_path = ""
 
@@ -593,7 +661,17 @@ def _cmd_report(args: list[str]) -> None:
             output_path = args[idx + 1]
 
     try:
+        from aegis.config import get_client_config, load_config
         from aegis.report import ReportFormat, generate_all_reports, generate_report
+
+        # Resolve canister_id from config if not provided
+        canister_id = canister_id_arg
+        if not canister_id:
+            cfg = load_config()
+            canister_id = get_client_config(cfg).get("canister_id", "")
+        if not canister_id:
+            print("Error: No canister_id provided and none found in ~/.aegis/config.toml")
+            sys.exit(1)
 
         valid_formats = {f.value for f in ReportFormat}
 
