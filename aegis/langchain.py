@@ -9,13 +9,7 @@ Usage:
     from aegis import AegisClient
     from aegis.langchain import AegisCallbackHandler
 
-    client = AegisClient(
-        canister_id="toqqq-lqaaa-aaaae-afc2a-cai",
-        api_key_id="ak_3f8a...",
-        private_key_path="./agent_key.pem",
-        agent_id="agent_research_v1",
-    )
-
+    client = AegisClient.from_config()  # after: aegis init
     handler = AegisCallbackHandler(client)
 
     # Drop it into any LangChain agent, chain, or tool

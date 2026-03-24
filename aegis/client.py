@@ -1,18 +1,12 @@
 """
 aegis.client — The primary interface for the Aegis Ledger SDK.
 
-Usage:
+Usage (after ``aegis init``)::
+
     from aegis import AegisClient
 
-    client = AegisClient(
-        canister_id="toqqq-lqaaa-aaaae-afc2a-cai",
-        api_key_id="ak_3f8a9b2c1d4e5f60",
-        private_key_path="./agent_key.pem",
-        agent_id="agent_billing_v2",
-        org_id="your-org-principal-id",
-    )
+    client = AegisClient.from_config()
 
-    # Option 1: Explicit logging
     client.log_tool_call(
         tool="stripe.create_charge",
         input_data={"amount": 5000, "currency": "usd"},
@@ -20,7 +14,6 @@ Usage:
         duration_ms=340,
     )
 
-    # Option 2: Decorator (zero-effort integration)
     @client.trace(action_type="tool_call")
     def search_web(query: str) -> dict:
         return requests.get(f"https://api.search.com?q={query}").json()
@@ -44,7 +37,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 from aegis import __version__  # single source of truth in __init__.py
-from aegis.config import get_default_scheme, get_signing_key_path, load_config
+from aegis.config import get_client_config, get_default_scheme, get_signing_key_path, load_config
 from aegis.crypto import (
     canonical_json,
     compute_chain_hash,
@@ -236,6 +229,72 @@ class AegisClient:
             self._session_id,
             self._canister_id,
         )
+
+    # ------------------------------------------------------------------
+    # Factory: zero-config construction from ~/.aegis/config.toml
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def from_config(
+        cls,
+        *,
+        agent_id: str | None = None,
+        session_id: str | None = None,
+        config_path: str | Path | None = None,
+        **overrides: Any,
+    ) -> AegisClient:
+        """Create an AegisClient from ``~/.aegis/config.toml``.
+
+        After running ``aegis init``, this is the simplest way to get started::
+
+            from aegis import AegisClient
+            client = AegisClient.from_config()
+
+        Args:
+            agent_id: Override the agent_id from config (optional).
+            session_id: Override the session_id (optional, auto-generated).
+            config_path: Custom path to config.toml (optional).
+            **overrides: Any other AegisClient constructor parameter.
+
+        Raises:
+            FileNotFoundError: If config.toml does not exist.
+            ValueError: If required fields are missing from config.
+        """
+        from pathlib import Path as _Path
+
+        cfg_path = _Path(config_path) if config_path else None
+        cfg = load_config(config_path=cfg_path)
+        if not cfg:
+            default_path = _Path("~/.aegis/config.toml").expanduser()
+            raise FileNotFoundError(
+                f"No config found at {cfg_path or default_path}. "
+                "Run 'aegis init' to set up your configuration."
+            )
+
+        client_cfg = get_client_config(cfg)
+        required = ("canister_id", "api_key_id", "private_key_path")
+        missing = [k for k in required if k not in client_cfg and k not in overrides]
+        if missing:
+            raise ValueError(
+                f"Missing required config fields: {', '.join(missing)}. "
+                "Run 'aegis init' to configure them."
+            )
+
+        # Build constructor kwargs: config < overrides
+        kwargs: dict[str, Any] = {}
+        kwargs["canister_id"] = overrides.pop("canister_id", client_cfg.get("canister_id", ""))
+        kwargs["api_key_id"] = overrides.pop("api_key_id", client_cfg.get("api_key_id", ""))
+        kwargs["private_key_path"] = overrides.pop(
+            "private_key_path", client_cfg.get("private_key_path", "")
+        )
+        kwargs["agent_id"] = agent_id or overrides.pop(
+            "agent_id", client_cfg.get("agent_id", "agent")
+        )
+        if session_id:
+            kwargs["session_id"] = session_id
+        kwargs.update(overrides)
+
+        return cls(**kwargs)
 
     # ------------------------------------------------------------------
     # PUBLIC API: Explicit logging methods

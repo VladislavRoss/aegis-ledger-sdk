@@ -8,13 +8,7 @@ Usage:
     from aegis import AegisClient
     from aegis.crewai import AegisCrewCallback
 
-    client = AegisClient(
-        canister_id="toqqq-lqaaa-aaaae-afc2a-cai",
-        api_key_id="ak_3f8a...",
-        private_key_path="./agent_key.pem",
-        agent_id="agent_crew_v1",
-    )
-
+    client = AegisClient.from_config()  # after: aegis init
     callback = AegisCrewCallback(client)
 
     crew = Crew(

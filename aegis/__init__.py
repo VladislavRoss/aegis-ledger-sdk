@@ -1,15 +1,10 @@
 """
 Aegis Ledger SDK — Tamper-evident execution ledger for AI agents.
 
-Quickstart:
-    from aegis import AegisClient
+Quickstart (after ``aegis init``)::
 
-    client = AegisClient(
-        canister_id="toqqq-lqaaa-aaaae-afc2a-cai",
-        api_key_id="ak_3f8a9b2c1d4e5f60",
-        private_key_path="./agent_key.pem",
-        agent_id="agent_billing_v2",
-    )
+    from aegis import AegisClient
+    client = AegisClient.from_config()
 
     @client.trace()
     def search_web(query: str) -> dict:
@@ -20,10 +15,16 @@ Quickstart:
 Full documentation: https://www.aegis-ledger.com/docs
 """
 
-__version__ = "0.2.2"
+__version__ = "0.2.3"
 
 from aegis.client import AegisClient
-from aegis.config import get_default_scheme, get_signing_key_path, load_config
+from aegis.config import (
+    get_client_config,
+    get_default_scheme,
+    get_signing_key_path,
+    load_config,
+    write_config,
+)
 from aegis.crypto import (
     generate_keypair,
     generate_mldsa65_keypair,
@@ -79,8 +80,10 @@ __all__ = [
     "TimestampToken",
     "TimestampVerification",
     "VerificationResult",
+    "get_client_config",
     "get_default_scheme",
     "get_signing_key_path",
+    "write_config",
     "generate_all_reports",
     "generate_keypair",
     "generate_mldsa65_keypair",

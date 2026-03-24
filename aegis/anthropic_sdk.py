@@ -8,13 +8,7 @@ Usage:
     from aegis import AegisClient
     from aegis.anthropic_sdk import AegisAnthropicTracer
 
-    client = AegisClient(
-        canister_id="toqqq-lqaaa-aaaae-afc2a-cai",
-        api_key_id="ak_3f8a...",
-        private_key_path="./agent_key.pem",
-        agent_id="agent_claude_v1",
-    )
-
+    client = AegisClient.from_config()  # after: aegis init
     tracer = AegisAnthropicTracer(client)
 
     # Wire into Anthropic Agent SDK hooks
