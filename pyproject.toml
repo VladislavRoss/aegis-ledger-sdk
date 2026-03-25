@@ -95,8 +95,7 @@ exclude = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["."]
-sources = {"." = "aegis"}
+packages = ["aegis"]
 
 [tool.pytest.ini_options]
 markers = [

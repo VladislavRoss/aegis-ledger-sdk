@@ -71,8 +71,8 @@ def verify_integrity(
             result = transport.call_query(
                 "verifyEntry", [{"type": Types.Text, "value": aid}],
             )
-            stored_hash = result.get("storedChainHash", result.get("_1835832718", ""))
-            is_valid = result.get("isValid", result.get("_2397498270", False))
+            stored_hash = result.get("storedChainHash", result.get("_1390137228", ""))
+            is_valid = result.get("isValid", result.get("_3460176050", False))
             if not is_valid:
                 missing.append(aid)
             elif stored_hash != snap["chain_hash"]:
