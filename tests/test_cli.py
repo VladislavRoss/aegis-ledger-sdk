@@ -143,7 +143,11 @@ class TestCliReport:
         result = _run_cli("report")
         # Either succeeds (config exists) or fails (no config)
         if result.returncode == 0:
-            assert "Compliance" in result.stdout or "Report" in result.stdout or "EU AI Act" in result.stdout
+            assert (
+                "Compliance" in result.stdout
+                or "Report" in result.stdout
+                or "EU AI Act" in result.stdout
+            )
         else:
             assert "Error:" in result.stdout or "No canister_id" in result.stdout
 

@@ -44,16 +44,16 @@ def _principal_text_to_bytes(text: str) -> bytes:
     if isinstance(text, bytes):
         return text
 
-    _CRC_LEN = 4
+    crc_len = 4
     s1 = text.replace("-", "")
     pad_len = math.ceil(len(s1) / 8) * 8 - len(s1)
     try:
         b = base64.b32decode(s1.upper().encode() + b"=" * pad_len)
     except Exception as exc:
         raise ValueError(f"Invalid principal text: {text!r}") from exc
-    if len(b) < _CRC_LEN:
+    if len(b) < crc_len:
         raise ValueError(f"Principal too short: {text!r}")
-    return b[_CRC_LEN:]
+    return b[crc_len:]
 
 _ACTION_TYPE_MAP: dict[str, str] = {
     "tool_call": "toolCall",

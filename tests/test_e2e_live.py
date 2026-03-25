@@ -10,6 +10,7 @@ Voraussetzungen:
     - Aktiver API Key auf dem Canister
     - Internetzugang zu icp-api.io
 """
+import contextlib
 import sys
 import uuid
 from pathlib import Path
@@ -178,10 +179,8 @@ class TestCLI:
         saved = _sys.argv
         _sys.argv = ["aegis", "version"]
         from aegis.cli import main
-        try:
+        with contextlib.suppress(SystemExit):
             main()
-        except SystemExit:
-            pass
         _sys.argv = saved
         out = capsys.readouterr().out
         assert "aegis-ledger-sdk" in out
@@ -192,10 +191,8 @@ class TestCLI:
         saved = _sys.argv
         _sys.argv = ["aegis", "status", "toqqq-lqaaa-aaaae-afc2a-cai"]
         from aegis.cli import main
-        try:
+        with contextlib.suppress(SystemExit):
             main()
-        except SystemExit:
-            pass
         _sys.argv = saved
         out = capsys.readouterr().out
         assert "toqqq" in out

@@ -171,7 +171,7 @@ def _fetch_canister_data(
 
     # ic-py returns Candid field hashes instead of names.
     # Map known hashes to field names for HealthInfo record.
-    _HEALTH_HASH_MAP = {
+    health_hash_map = {
         "_576569836": "totalEntries",
         "_1673630680": "totalKeys",
         "_1718631411": "totalOrgs",
@@ -184,7 +184,7 @@ def _fetch_canister_data(
     raw_dict = raw.get("raw", raw) if isinstance(raw, dict) else raw
     if isinstance(raw_dict, dict):
         for k, v in raw_dict.items():
-            name = _HEALTH_HASH_MAP.get(str(k), str(k))
+            name = health_hash_map.get(str(k), str(k))
             mapped[name] = v
 
     total_entries = mapped.get("totalEntries", 0)

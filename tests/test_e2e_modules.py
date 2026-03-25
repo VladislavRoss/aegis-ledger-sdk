@@ -55,8 +55,13 @@ def _make_mock_transport():
     return transport
 
 
-def _make_client(pem_path, transport=None, session_id="e2e-session", org_id="un4fu-tqaaa-aaaab-qadjq-cai",
-                 fail_open=True, api_key_id="ak_e2e"):
+def _make_client(
+    pem_path, transport=None, session_id="e2e-session",
+    org_id="un4fu-tqaaa-aaaab-qadjq-cai",
+    fail_open=True, api_key_id="ak_e2e",
+):
+
+
     """Create AegisClient with mocked/real transport."""
     with (
         patch("aegis.client.CanisterTransport") as MockTransport,

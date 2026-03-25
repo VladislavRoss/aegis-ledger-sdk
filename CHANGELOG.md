@@ -2,6 +2,16 @@
 
 All notable changes to `aegis-ledger-sdk` are documented here.
 
+## [0.2.5] — 2026-03-25
+
+### Added
+- **Client-side integrity snapshots** — `verify_integrity(sample_size=10)` detects tampered on-chain entries by comparing local chain-hash cache against canister state
+- **Snapshot storage** — `~/.aegis/snapshots/<canister_id>.jsonl` written on every `addLedgerEntry` call
+- 8 new tests for integrity snapshot + verification
+
+### Changed
+- `AegisClient.from_config()` is now the primary factory (docstrings updated)
+
 ## [0.2.4] — 2026-03-24
 
 ### Fixed

@@ -742,6 +742,16 @@ class AegisClient:
 
         This is the ONLY path through which entries reach the canister.
         """
+        # Coerce string status to ActionStatus enum (common user mistake)
+        if isinstance(status, str):
+            try:
+                status = ActionStatus(status)
+            except ValueError:
+                raise ValueError(
+                    f"Invalid status {status!r}. Use ActionStatus.SUCCESS, "
+                    f"ActionStatus.FAILURE, ActionStatus.TIMEOUT, or ActionStatus.ERROR"
+                ) from None
+
         if duration_ms < 0:
             raise ValueError(f"duration_ms must be >= 0, got {duration_ms}")
         if not (0.0 <= confidence <= 1.0):
@@ -798,6 +808,8 @@ class AegisClient:
                 self._sequence += 1
                 should_drain = self._transport.spill_count > 0
 
+                self._write_snapshot(action_id, chain_hash, entry.session_id, now_ms)
+
                 logger.debug(
                     "Logged action: seq=%d type=%s tool=%s → %s",
                     entry.sequence_number, action_type.value, tool, action_id,
@@ -820,6 +832,26 @@ class AegisClient:
                 self._transport.drain_spill_buffer()
 
         return action_id
+
+    # ------------------------------------------------------------------
+    # Integrity Snapshot — delegated to integrity.py
+    # ------------------------------------------------------------------
+
+    @property
+    def _snapshot_path(self) -> Path:
+        from .integrity import snapshot_path
+        return snapshot_path(self._transport._config.spill_dir, self._canister_id)
+
+    def _write_snapshot(
+        self, action_id: str, chain_hash: str, session_id: str, ts_ms: int,
+    ) -> None:
+        from .integrity import write_snapshot
+        write_snapshot(self._snapshot_path, action_id, chain_hash, session_id, ts_ms)
+
+    def verify_integrity(self, sample_size: int = 10) -> dict:
+        """Verify canister entries against locally stored chain-hash snapshots."""
+        from .integrity import verify_integrity
+        return verify_integrity(self._snapshot_path, self._transport, sample_size)
 
     # ------------------------------------------------------------------
     # INTERNAL: Environment auto-detection

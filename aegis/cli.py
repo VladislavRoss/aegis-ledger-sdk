@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import sys
 
-
 # ---------------------------------------------------------------------------
 # Candid hash-key mapping (ic-py returns field hashes, not names)
 # ---------------------------------------------------------------------------
@@ -286,7 +285,7 @@ def _cmd_init(args: list[str]) -> None:
             pop_sig = sign_payload(pop_msg, sk)
         elif algorithm == "hybrid":
             from aegis.crypto import load_private_key
-            from aegis.schemes import create_scheme, HybridScheme
+            from aegis.schemes import create_scheme
             ed_sk = load_private_key(key_path)
             ml_sk_bytes = Path(signing_key_path).read_bytes()
             scheme = create_scheme("hybrid", (ed_sk, ml_sk_bytes))
@@ -296,10 +295,10 @@ def _cmd_init(args: list[str]) -> None:
             sk_bytes = Path(signing_key_path).read_bytes()
             scheme = create_scheme(algorithm, sk_bytes)
             pop_sig = scheme.sign(pop_msg)
-        print(f"  [OK] Proof of Possession computed")
+        print("  [OK] Proof of Possession computed")
     except Exception as e:
         print(f"  [WARN] Could not compute PoP: {e}")
-        print(f"  You may need to paste the PoP manually in the Dashboard.")
+        print("  You may need to paste the PoP manually in the Dashboard.")
 
     dash_url = (
         f"{dash_base}"
@@ -332,7 +331,10 @@ def _cmd_init(args: list[str]) -> None:
     print("  Your Principal is shown in the Dashboard top-right (after login).")
     org_id = _prompt("  Enter your Principal from Dashboard: ").strip()
     if not org_id:
-        print("  [WARN] No Principal entered — org_id will be derived from PEM (may not match II login).")
+        print(
+            "  [WARN] No Principal entered — org_id will be"
+            " derived from PEM (may not match II login)."
+        )
 
     print()
 
@@ -567,7 +569,8 @@ def _cmd_verify_chain(args: list[str]) -> None:
         print("canister_id is optional if configured in ~/.aegis/config.toml")
         sys.exit(1)
 
-    # Support both: aegis verify-chain <session_id>  and  aegis verify-chain <canister_id> <session_id>
+    # Support both: aegis verify-chain <session_id>
+    # and: aegis verify-chain <canister_id> <session_id>
     if len(args) >= 2 and "-" in args[0]:
         canister_id_arg, session_id = args[0], args[1]
     else:

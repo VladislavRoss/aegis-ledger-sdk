@@ -67,8 +67,11 @@ def _make_mock_transport():
     return transport
 
 
-def _make_client(pem_path, transport=None, session_id="e2e-session", org_id="un4fu-tqaaa-aaaab-qadjq-cai",
-                 fail_open=True, api_key_id="ak_e2e"):
+def _make_client(
+    pem_path, transport=None, session_id="e2e-session",
+    org_id="un4fu-tqaaa-aaaab-qadjq-cai",
+    fail_open=True, api_key_id="ak_e2e",
+):
     """Create AegisClient with mocked/real transport."""
     with (
         patch("aegis.client.CanisterTransport") as MockTransport,
@@ -457,7 +460,8 @@ class TestW07MultiAgentMultiSession:
             c.log_tool_call(tool="org_test", input_data={}, output_data={}, duration_ms=0)
             args = t.call_update.call_args[0][1]
             from aegis.transport import _principal_text_to_bytes
-            assert args[1]["value"] == _principal_text_to_bytes("un4fu-tqaaa-aaaab-qadjq-cai"), f"Agent {i} must use same org"
+            expected = _principal_text_to_bytes("un4fu-tqaaa-aaaab-qadjq-cai")
+            assert args[1]["value"] == expected, f"Agent {i} must use same org"
 
 
 # ============================================================================
