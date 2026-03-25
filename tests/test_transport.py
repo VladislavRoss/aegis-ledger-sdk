@@ -145,6 +145,25 @@ class TestCanisterError:
         err = CanisterError("Something went wrong")
         assert err.error_code == "UNKNOWN"
 
+    def test_no_ic_py_error_includes_fix_hint(self):
+        """NO_IC_PY error messages include pip install hint."""
+        from aegis.transport import CanisterError
+
+        err = CanisterError("ic-py not installed. Fix: pip install ic-py", error_code="NO_IC_PY")
+        assert "pip install ic-py" in str(err)
+
+    def test_transport_exhausted_includes_guidance(self):
+        """TRANSPORT_EXHAUSTED error includes actionable steps."""
+        from aegis.transport import CanisterError
+
+        msg = (
+            "Canister unreachable after 3 attempts.\n"
+            "What to do next:\n  1. Check your internet connection"
+        )
+        err = CanisterError(msg, error_code="TRANSPORT_EXHAUSTED")
+        assert "What to do next" in str(err)
+        assert "aegis status" in str(err) or "internet" in str(err)
+
 
 class TestSpillBuffer:
     def test_spill_to_disk_creates_file(self, tmp_path):

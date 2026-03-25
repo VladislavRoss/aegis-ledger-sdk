@@ -119,7 +119,9 @@ def _build_add_ledger_entry_args(
         from ic.candid import Types  # type: ignore[import-untyped]
     except ImportError as e:
         raise CanisterError(
-            "ic-py not installed — cannot build Candid args", error_code="NO_IC_PY"
+            "ic-py not installed — cannot build Candid args. "
+            "Fix: pip install ic-py",
+            error_code="NO_IC_PY",
         ) from e
 
     # Types.Variant muss mit dem vollständigen Schema-Dict aufgerufen werden.
@@ -298,7 +300,12 @@ class CanisterTransport:
         )
         raise CanisterError(
             f"Canister unreachable after {self._config.max_retries} attempts. "
-            f"Entry saved locally at {self._spill_path} for later retry.",
+            f"Entry saved locally at {self._spill_path} for later retry.\n"
+            "What to do next:\n"
+            "  1. Check your internet connection\n"
+            "  2. Run 'aegis status' to verify canister availability\n"
+            "  3. Run 'aegis spill-status' to see pending entries\n"
+            "  4. Entries will auto-retry on next SDK call",
             error_code="TRANSPORT_EXHAUSTED",
         )
 
@@ -315,7 +322,7 @@ class CanisterTransport:
         """Execute a single canister call."""
         if not self._ic_available:
             raise CanisterError(
-                "ic-py not installed. Cannot communicate with canister.",
+                "ic-py not installed. Cannot communicate with canister. Fix: pip install ic-py",
                 error_code="NO_IC_PY",
             )
 

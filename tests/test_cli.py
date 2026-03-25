@@ -317,3 +317,55 @@ class TestCliEdgeCases:
         result = _run_cli("keygen", str(key_path), "--algorithm")
         # Should either use default (ed25519) or error gracefully
         assert result.returncode in (0, 1)
+
+
+class TestCliSpillStatus:
+    """Tests for aegis spill-status command."""
+
+    def test_spill_status_in_help(self):
+        result = _run_cli("--help")
+        assert "spill-status" in result.stdout
+
+    def test_spill_status_no_spill_dir(self, tmp_path, monkeypatch):
+        """No spill dir → 'All synced'."""
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
+        result = _run_cli("spill-status")
+        assert result.returncode == 0
+        assert "synced" in result.stdout.lower() or "No pending" in result.stdout
+
+    def test_spill_status_empty_dir(self, tmp_path, monkeypatch):
+        """Spill dir exists but empty → 'All synced'."""
+        spill_dir = tmp_path / ".aegis" / "spill"
+        spill_dir.mkdir(parents=True)
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
+        result = _run_cli("spill-status")
+        assert result.returncode == 0
+        assert "synced" in result.stdout.lower() or "No pending" in result.stdout
+
+    def test_spill_status_with_entries(self, tmp_path, monkeypatch):
+        """Spill files present → show stats."""
+        import json
+        spill_dir = tmp_path / ".aegis" / "spill"
+        spill_dir.mkdir(parents=True)
+        entry = {"method": "addLedgerEntry", "timestamp_ms": 1700000000000}
+        (spill_dir / "test.jsonl").write_text(json.dumps(entry) + "\n")
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
+        result = _run_cli("spill-status")
+        assert result.returncode == 0
+        assert "Pending" in result.stdout or "1" in result.stdout
+
+
+class TestCliListSessions:
+    """Tests for aegis list-sessions command."""
+
+    def test_list_sessions_in_help(self):
+        result = _run_cli("--help")
+        assert "list-sessions" in result.stdout
+
+    def test_list_sessions_bad_canister(self):
+        result = _run_cli("list-sessions", "invalid-canister")
+        assert result.returncode == 1
+        assert "Error:" in result.stdout

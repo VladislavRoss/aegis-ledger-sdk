@@ -93,6 +93,10 @@ def main() -> None:
         _cmd_report(args[1:])
     elif command == "migrate":
         _cmd_migrate(args[1:])
+    elif command == "spill-status":
+        _cmd_spill_status()
+    elif command == "list-sessions":
+        _cmd_list_sessions(args[1:])
     elif command == "version":
         from aegis import __version__
 
@@ -117,6 +121,8 @@ Commands:
   status [canister_id]              Check canister health and chain stats
   report [canister_id] [--format F] Generate compliance report
   migrate [options]                 Re-sign entries with a new algorithm
+  spill-status                      Show pending spill entries (offline buffer)
+  list-sessions [canister_id]       List your sessions on the canister
   version                           Print SDK version
 
 Algorithms (keygen):
@@ -778,6 +784,93 @@ Examples:
         print(f"Migration complete: {report['total_entries']} entries re-signed")
         print(f"  Algorithm: {report['source_algorithm']} -> {report['target_algorithm']}")
         print(f"  Output:    {report['output_file']}")
+
+    except Exception as e:
+        print(f"Error: {e}")
+        sys.exit(1)
+
+
+_LIST_SESSIONS_HASH_MAP: dict[str, str] = {
+    "_3457905975": "sessionId",
+    "_576569836": "entryCount",
+}
+
+
+def _cmd_spill_status() -> None:
+    """Show pending spill entries (offline buffer)."""
+    from pathlib import Path
+
+    spill_dir = Path.home() / ".aegis" / "spill"
+    if not spill_dir.exists():
+        print("No pending entries. All synced.")
+        return
+
+    jsonl_files = list(spill_dir.glob("*.jsonl"))
+    if not jsonl_files:
+        print("No pending entries. All synced.")
+        return
+
+    import json
+    from datetime import datetime, timezone
+
+    total_entries = 0
+    total_bytes = 0
+    oldest_ts: float | None = None
+
+    for f in jsonl_files:
+        size = f.stat().st_size
+        total_bytes += size
+        lines = [line for line in f.read_text(encoding="utf-8").strip().split("\n") if line]
+        total_entries += len(lines)
+        for line in lines:
+            try:
+                entry = json.loads(line)
+                ts = entry.get("timestamp_ms", 0)
+                if ts and (oldest_ts is None or ts < oldest_ts):
+                    oldest_ts = ts
+            except json.JSONDecodeError:
+                continue
+
+    if total_entries == 0:
+        print("No pending entries. All synced.")
+        return
+
+    print(f"Pending spill entries: {total_entries}")
+    print(f"  Files:   {len(jsonl_files)}")
+    print(f"  Size:    {total_bytes / 1024:.1f} KB")
+    if oldest_ts:
+        age = datetime.now(timezone.utc) - datetime.fromtimestamp(oldest_ts / 1000, tz=timezone.utc)
+        print(f"  Oldest:  {age.days}d {age.seconds // 3600}h ago")
+    print()
+    print("Run 'aegis test' to retry flushing, or check your network connection.")
+
+
+def _cmd_list_sessions(args: list[str]) -> None:
+    """List sessions via listMySessions canister query."""
+    canister_id = args[0] if args else None
+
+    try:
+        transport, _ = _transport_from_config(canister_id)
+    except Exception as e:
+        print(f"Error: {e}")
+        sys.exit(1)
+
+    try:
+        result = transport.call_query("listMySessions", [])
+        sessions = result if isinstance(result, list) else result.get("ok", [])
+
+        if not sessions:
+            print("No sessions found. Log your first action with @client.trace().")
+            return
+
+        print(f"{'SESSION ID':<44}  ENTRIES")
+        print("-" * 56)
+        for s in sessions:
+            raw = s if isinstance(s, dict) else {}
+            mapped = _map_candid_keys(raw, _LIST_SESSIONS_HASH_MAP)
+            sid = mapped.get("sessionId", str(s) if not isinstance(s, dict) else "?")
+            count = mapped.get("entryCount", "?")
+            print(f"{sid:<44}  {count}")
 
     except Exception as e:
         print(f"Error: {e}")
