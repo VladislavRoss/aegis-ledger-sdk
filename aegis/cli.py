@@ -378,6 +378,16 @@ def _cmd_init(args: list[str]) -> None:
 
     print()
     print("=== Setup complete ===")
+    print()
+    print("Next steps:")
+    print("  1. Test your connection:  aegis test")
+    print("  2. Integrate with your framework:")
+    print("     Pure Python:  @client.trace()")
+    print("     LangChain:    from aegis.langchain import AegisCallbackHandler")
+    print("     CrewAI:       from aegis.crewai import AegisCrewCallback")
+    print("     OpenAI:       from aegis.openai_agents import AegisAgentTracer")
+    print("  3. View your sessions:    aegis list-sessions")
+    print("  Docs: https://www.aegis-ledger.com/docs")
 
 
 def _prompt(text: str) -> str:
@@ -443,6 +453,10 @@ def _cmd_test(args: list[str]) -> None:
 
     print()
     print("=== All checks passed ===")
+    print()
+    print(f"  Entry {action_id} is verified on-chain.")
+    print("  View in dashboard: https://www.aegis-ledger.com/dashboard")
+    print("  List all sessions: aegis list-sessions")
 
 
 def _cmd_keygen(args: list[str]) -> None:
