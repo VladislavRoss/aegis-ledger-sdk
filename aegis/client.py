@@ -616,6 +616,24 @@ class AegisClient:
         Entries are logged atomically one-by-one (each acquires the lock),
         guaranteeing monotonic sequence numbers and correct hash-chaining.
         """
+        valid_action_types = {e.value for e in ActionType}
+        valid_statuses = {e.value for e in ActionStatus}
+        for i, entry in enumerate(entries):
+            if not isinstance(entry, dict):
+                raise TypeError(f"log_batch entry[{i}] must be a dict, got {type(entry).__name__}")
+            at = entry.get("action_type", "tool_call")
+            if at not in valid_action_types:
+                raise ValueError(
+                    f"log_batch entry[{i}]: invalid action_type {at!r}. "
+                    f"Valid: {', '.join(sorted(valid_action_types))}"
+                )
+            st = entry.get("status", "success")
+            if st not in valid_statuses:
+                raise ValueError(
+                    f"log_batch entry[{i}]: invalid status {st!r}. "
+                    f"Valid: {', '.join(sorted(valid_statuses))}"
+                )
+
         results: list[str] = []
         for entry in entries:
             action_id = self._log(
@@ -747,9 +765,9 @@ class AegisClient:
             try:
                 status = ActionStatus(status)
             except ValueError:
+                valid = ', '.join(s.value for s in ActionStatus)
                 raise ValueError(
-                    f"Invalid status {status!r}. Use ActionStatus.SUCCESS, "
-                    f"ActionStatus.FAILURE, ActionStatus.TIMEOUT, or ActionStatus.ERROR"
+                    f"Invalid status {status!r}. Valid values: {valid}"
                 ) from None
 
         if duration_ms < 0:

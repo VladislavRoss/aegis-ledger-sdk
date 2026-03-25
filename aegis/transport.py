@@ -424,7 +424,13 @@ class CanisterTransport:
         failed: list[str] = []
         drained = 0
 
-        spill_ttl_days = int(os.environ.get("AEGIS_SPILL_TTL_DAYS", "30"))
+        raw_ttl = int(os.environ.get("AEGIS_SPILL_TTL_DAYS", "30"))
+        spill_ttl_days = max(1, min(365, raw_ttl))
+        if raw_ttl != spill_ttl_days:
+            logger.warning(
+                "AEGIS_SPILL_TTL_DAYS=%d out of range [1,365], clamped to %d",
+                raw_ttl, spill_ttl_days,
+            )
         spill_ttl_ms = spill_ttl_days * 24 * 60 * 60 * 1000
         now_ms = int(time.time() * 1000)
 

@@ -104,9 +104,10 @@ agent.invoke({"input": "Process refund"}, config={"callbacks": [handler]})
 ### CrewAI
 
 ```python
-from aegis.crewai import aegis_step_callback
+from aegis.crewai import AegisCrewCallback
 
-crew = Crew(agents=[...], tasks=[...], step_callback=aegis_step_callback(client))
+callback = AegisCrewCallback(client)
+crew = Crew(agents=[...], tasks=[...], step_callback=callback)
 ```
 
 ### OpenAI Agents SDK
