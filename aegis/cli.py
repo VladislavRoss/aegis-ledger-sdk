@@ -417,9 +417,10 @@ def _cmd_test(args: list[str]) -> None:
             private_key_path=client._transport._config.private_key_path,
         )
         transport = CanisterTransport(config)
-        result = transport.call_query(
+        raw = transport.call_query(
             "verifyEntry", [{"type": Types.Text, "value": action_id}]
         )
+        result = _map_candid_keys(raw, _VERIFY_HASH_MAP) if isinstance(raw, dict) else raw
         if result.get("isValid"):
             print("  [OK] VERIFIED — hash chain valid, signature on-chain")
         else:
