@@ -97,6 +97,14 @@ def main() -> None:
         _cmd_spill_status()
     elif command == "list-sessions":
         _cmd_list_sessions(args[1:])
+    elif command == "doctor":
+        _cmd_doctor(args[1:])
+    elif command == "register-key":
+        from aegis.cli_keys import cmd_register_key
+        cmd_register_key(args[1:])
+    elif command == "revoke":
+        from aegis.cli_keys import cmd_revoke
+        cmd_revoke(args[1:])
     elif command == "version":
         from aegis import __version__
 
@@ -123,6 +131,9 @@ Commands:
   migrate [options]                 Re-sign entries with a new algorithm
   spill-status                      Show pending spill entries (offline buffer)
   list-sessions [canister_id]       List your sessions on the canister
+  doctor                            Check SDK health (config, keys, canister)
+  register-key <id> --key-file <f>  Register a new API key via Dashboard
+  revoke <key_id>                   Revoke an API key (confirmation required)
   version                           Print SDK version
 
 Algorithms (keygen):
@@ -159,6 +170,7 @@ def _cmd_init(args: list[str]) -> None:
 
     from aegis.config import _CONFIG_DIR, write_config
 
+    quickstart = "--quickstart" in args
     canister = "toqqq-lqaaa-aaaae-afc2a-cai"
     dash_base = "https://www.aegis-ledger.com/dashboard"
     algo_names = {
@@ -182,10 +194,12 @@ def _cmd_init(args: list[str]) -> None:
 
     print()
     print("=== Aegis SDK Setup ===")
+    if quickstart:
+        print("  (quickstart mode — using defaults, no prompts)")
     print()
 
     # --- Step 1: Algorithm selection (interactive if not passed via flag) ---
-    if "--algorithm" not in args:
+    if not quickstart and "--algorithm" not in args:
         print("Step 1/4: Choose signature algorithm")
         print()
         print("  [1] Ed25519          — fast, classical (default)")
@@ -327,20 +341,27 @@ def _cmd_init(args: list[str]) -> None:
     except Exception:
         print(f"  Open this URL: {dash_url}")
 
-    print()
-    print(f"  Suggested Key ID: {suggested_id}")
-    api_key_id = _prompt(f"  Enter Key ID from Dashboard [{suggested_id}]: ").strip()
-    if not api_key_id:
+    if quickstart:
         api_key_id = suggested_id
+        org_id = ""
+        print()
+        print(f"  [OK] Using Key ID: {suggested_id}")
+        print("  [WARN] Set org_id in ~/.aegis/config.toml after Dashboard login.")
+    else:
+        print()
+        print(f"  Suggested Key ID: {suggested_id}")
+        api_key_id = _prompt(f"  Enter Key ID from Dashboard [{suggested_id}]: ").strip()
+        if not api_key_id:
+            api_key_id = suggested_id
 
-    print()
-    print("  Your Principal is shown in the Dashboard top-right (after login).")
-    org_id = _prompt("  Enter your Principal from Dashboard: ").strip()
-    if not org_id:
-        print(
-            "  [WARN] No Principal entered — org_id will be"
-            " derived from PEM (may not match II login)."
-        )
+        print()
+        print("  Your Principal is shown in the Dashboard top-right (after login).")
+        org_id = _prompt("  Enter your Principal from Dashboard: ").strip()
+        if not org_id:
+            print(
+                "  [WARN] No Principal entered — org_id will be"
+                " derived from PEM (may not match II login)."
+            )
 
     print()
 
@@ -889,6 +910,15 @@ def _cmd_list_sessions(args: list[str]) -> None:
     except Exception as e:
         print(f"Error: {e}")
         sys.exit(1)
+
+
+def _cmd_doctor(args: list[str]) -> None:
+    """Run SDK health diagnostics."""
+    from aegis.doctor import doctor_main
+
+    canister_id = args[0] if args else None
+    code = doctor_main(canister_id=canister_id)
+    sys.exit(code)
 
 
 if __name__ == "__main__":

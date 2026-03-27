@@ -15,7 +15,7 @@ Quickstart (after ``aegis init``)::
 Full documentation: https://www.aegis-ledger.com/docs
 """
 
-__version__ = "0.2.5"
+__version__ = "0.2.6"
 
 from aegis.client import AegisClient
 from aegis.config import (
@@ -36,6 +36,13 @@ from aegis.crypto import (
     sha256_hex,
     sha256_json,
 )
+from aegis.errors import (
+    AegisAuthError,
+    AegisConfigError,
+    AegisError,
+    AegisTransportError,
+    CanisterError,
+)
 from aegis.report import (
     ComplianceReport,
     ReportFormat,
@@ -50,7 +57,6 @@ from aegis.timestamp import (
     TimestampToken,
     TimestampVerification,
 )
-from aegis.transport import AegisError, CanisterError
 from aegis.types import (
     ActionContext,
     ActionPayload,
@@ -64,7 +70,10 @@ from aegis.verify import verify_chain
 
 __all__ = [
     "AegisClient",
+    "AegisAuthError",
+    "AegisConfigError",
     "AegisError",
+    "AegisTransportError",
     "ActionContext",
     "ActionPayload",
     "ActionStatus",

@@ -49,6 +49,7 @@ from aegis.crypto import (
     sha256_json,
     truncate_preview,
 )
+from aegis.errors import translate_error
 from aegis.transport import CanisterTransport, TransportConfig, _build_add_ledger_entry_args
 from aegis.types import (
     ActionContext,
@@ -835,8 +836,10 @@ class AegisClient:
 
             except Exception as e:
                 if self._fail_open:
+                    translated = translate_error(str(e), key_id=self._api_key_id)
                     logger.warning(
-                        "Failed to log action (fail_open=True, continuing): %s", e,
+                        "Failed to log action (fail_open=True, continuing): %s",
+                        translated,
                         exc_info=True,
                     )
                     # CRITICAL FIX (F-3): Do NOT advance chain head or sequence

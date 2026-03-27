@@ -75,16 +75,7 @@ def action_type_to_candid_variant(action_type: str) -> dict[str, None]:
     return {_ACTION_TYPE_MAP[action_type]: None}
 
 
-class AegisError(Exception):
-    """Base exception for all Aegis SDK errors."""
-
-
-class CanisterError(AegisError):
-    """Raised when the canister returns an error response."""
-
-    def __init__(self, message: str, error_code: str = "UNKNOWN"):
-        self.error_code = error_code
-        super().__init__(f"[{error_code}] {message}")
+from aegis.errors import AegisError, CanisterError  # noqa: E402, F401 — re-export
 
 
 def _build_add_ledger_entry_args(

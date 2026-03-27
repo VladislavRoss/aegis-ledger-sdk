@@ -27,6 +27,35 @@ from mcp.server.fastmcp import FastMCP
 logger = logging.getLogger("aegis.mcp")
 
 # ---------------------------------------------------------------------------
+# Candid hash-key mapping (ic-py returns field hashes, not names)
+# ---------------------------------------------------------------------------
+
+_HEALTH_HASH_MAP: dict[str, str] = {
+    "_576569836": "totalEntries",
+    "_1673630680": "totalKeys",
+    "_1718631411": "totalOrgs",
+    "_492408735": "heapBytes",
+    "_3726629775": "cyclesBalance",
+    "_4170640857": "deferredVerifications",
+    "_3342846017": "totalSessions",
+}
+
+_VERIFY_HASH_MAP: dict[str, str] = {
+    "_3776271665": "actionId",
+    "_3460176050": "isValid",
+    "_1390137228": "storedChainHash",
+    "_2601806392": "previousChainHash",
+    "_3248078826": "sequenceNumber",
+    "_2584819143": "message",
+}
+
+
+def _map_candid_keys(raw: dict, hash_map: dict[str, str]) -> dict:
+    """Map Candid field-hash keys to human-readable names."""
+    return {hash_map.get(str(k), str(k)): v for k, v in raw.items()}
+
+
+# ---------------------------------------------------------------------------
 # MCP server instance
 # ---------------------------------------------------------------------------
 
@@ -271,9 +300,10 @@ def aegis_verify_entry(action_id: str) -> str:
     from ic.candid import Types  # type: ignore[import-untyped]
 
     transport = _get_transport()
-    result = transport.call_query(
+    raw = transport.call_query(
         "verifyEntry", [{"type": Types.Text, "value": action_id}]
     )
+    result = _map_candid_keys(raw, _VERIFY_HASH_MAP)
     return json.dumps({
         "is_valid": result.get("isValid", False),
         "stored_chain_hash": result.get("storedChainHash", ""),
@@ -292,7 +322,8 @@ def aegis_get_health() -> str:
         JSON with totalEntries, totalKeys, totalOrgs, heapBytes, etc.
     """
     transport = _get_transport()
-    health = transport.call_query("getHealth", [])
+    raw = transport.call_query("getHealth", [])
+    health = _map_candid_keys(raw, _HEALTH_HASH_MAP)
     return json.dumps(health, default=str)
 
 
@@ -338,7 +369,8 @@ def aegis_new_session(session_id: str = "") -> str:
 def resource_health() -> str:
     """Live canister health status as JSON."""
     transport = _get_transport()
-    health = transport.call_query("getHealth", [])
+    raw = transport.call_query("getHealth", [])
+    health = _map_candid_keys(raw, _HEALTH_HASH_MAP)
     return json.dumps(health, default=str)
 
 

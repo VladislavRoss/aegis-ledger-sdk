@@ -2,6 +2,21 @@
 
 All notable changes to `aegis-ledger-sdk` are documented here.
 
+## [0.2.6] — 2026-03-27
+
+### Added
+- **`aegis doctor`** — SDK health diagnostics: config, keys, canister, spill, API key status
+- **`aegis init --quickstart`** — non-interactive setup with Ed25519 defaults (no prompts)
+- **`aegis register-key`** — register a new API key with PoP from CLI
+- **`aegis revoke`** — revoke an API key with confirmation prompt
+- **Error classes** — `AegisAuthError`, `AegisConfigError`, `AegisTransportError` with human-readable messages
+- **`translate_error()`** — maps canister error strings to actionable hints (e.g. "Run: aegis doctor")
+- 30 new tests (errors, CLI doctor, CLI register-key/revoke)
+
+### Changed
+- `AegisError` and `CanisterError` moved from `transport.py` to `errors.py` (backward-compatible re-export)
+- `client.py` uses `translate_error()` for fail-open logging warnings
+
 ## [0.2.5] — 2026-03-25
 
 ### Added
