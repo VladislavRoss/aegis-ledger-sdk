@@ -165,7 +165,6 @@ Examples:
 def _cmd_init(args: list[str]) -> None:
     """Interactive setup wizard: keygen + config + dashboard link."""
     import secrets
-    from pathlib import Path
     from urllib.parse import quote
 
     from aegis.config import _CONFIG_DIR, write_config
@@ -198,14 +197,26 @@ def _cmd_init(args: list[str]) -> None:
         print("  (quickstart mode — using defaults, no prompts)")
     print()
 
-    # --- Step 1: Algorithm selection (interactive if not passed via flag) ---
-    if not quickstart and "--algorithm" not in args:
-        print("Step 1/4: Choose signature algorithm")
+    # --- Step 1: Key name ---
+    suggested_id = "ak_" + secrets.token_hex(3)
+    if quickstart:
+        api_key_id = suggested_id
+    else:
+        print("Step 1/3: Name your key")
         print()
-        print("  [1] Ed25519          — fast, classical (default)")
-        print("  [2] ML-DSA-65        — FIPS 204 post-quantum")
-        print("  [3] ML-DSA-87        — CNSA 2.0 Level 5")
-        print("  [4] SLH-DSA-128s     — hash-based PQ fallback")
+        api_key_id = _prompt(f"  Key name [{suggested_id}]: ").strip()
+        if not api_key_id:
+            api_key_id = suggested_id
+        print()
+
+    # --- Step 2: Algorithm selection (interactive if not passed via flag) ---
+    if not quickstart and "--algorithm" not in args:
+        print("Step 2/3: Security level")
+        print()
+        print("  [1] Standard         — Ed25519, fast & proven (default)")
+        print("  [2] Post-Quantum     — ML-DSA-65, future-proof (FIPS 204)")
+        print("  [3] Maximum          — ML-DSA-87, highest security (CNSA 2.0)")
+        print("  [4] Hash-based PQ    — SLH-DSA-128s, conservative fallback")
         print("  [5] Hybrid           — Ed25519 + ML-DSA-65 combined")
         print()
         choice = _prompt("  Choice [1]: ").strip()
@@ -215,36 +226,47 @@ def _cmd_init(args: list[str]) -> None:
         if not algorithm:
             print(f"  Error: Invalid choice '{choice}'.")
             sys.exit(1)
-    print(f"  [OK] Algorithm: {algo_names[algorithm]}")
+    print(f"  [OK] {algo_names[algorithm]}")
     print()
 
-    # --- Step 2: Key generation ---
+    # --- Key generation ---
     key_dir = _CONFIG_DIR / "keys"
     key_dir.mkdir(parents=True, exist_ok=True)
     signing_key_path = ""
 
     if algorithm == "ed25519":
         key_path = key_dir / "agent_key.pem"
-        pub_path = Path(str(key_path) + ".pub")
         if key_path.exists():
             print(f"  [OK] Key already exists: {key_path}")
-            pub_hex = pub_path.read_text(encoding="utf-8").strip() if pub_path.exists() else "???"
+            from aegis.crypto import get_public_key_hex, load_private_key
+            pub_hex = get_public_key_hex(load_private_key(str(key_path)))
         else:
             print("  Generating Ed25519 keypair...")
             from aegis.crypto import generate_keypair
             try:
                 _, pub_hex = generate_keypair(str(key_path))
             except FileExistsError:
-                pub_hex = pub_path.read_text(encoding="utf-8").strip() if pub_path.exists() else "?"
+                from aegis.crypto import get_public_key_hex, load_private_key
+                pub_hex = get_public_key_hex(load_private_key(str(key_path)))
             print(f"  [OK] Private key: {key_path}")
     elif algorithm == "hybrid":
         base_path = key_dir / "agent_key"
-        key_path = Path(str(base_path) + ".pem")
-        pub_path = Path(str(base_path) + ".hybrid.pub")
-        sk_path = Path(str(base_path) + ".mldsa65")
+        key_path = base_path.with_suffix(".pem")
+        pub_path = base_path.with_suffix(".hybrid.pub")
+        sk_path = base_path.with_suffix(".mldsa65")
+        ml_pub_path = sk_path.parent / (sk_path.name + ".pub")
         if key_path.exists() and sk_path.exists():
             print(f"  [OK] Keys already exist: {key_path}")
-            pub_hex = pub_path.read_text(encoding="utf-8").strip() if pub_path.exists() else "???"
+            if pub_path.exists():
+                pub_hex = pub_path.read_text(encoding="utf-8").strip()
+            elif ml_pub_path.exists():
+                from aegis.crypto import get_public_key_hex, load_private_key
+                ed_pub = get_public_key_hex(load_private_key(str(key_path)))
+                ml_pub = ml_pub_path.read_text(encoding="utf-8").strip()
+                pub_hex = ed_pub + ml_pub
+                pub_path.write_text(pub_hex + "\n")
+            else:
+                pub_hex = "???"
         else:
             print("  Generating Hybrid (Ed25519 + ML-DSA-65) keypair...")
             from aegis.crypto import generate_hybrid_keypair
@@ -259,7 +281,8 @@ def _cmd_init(args: list[str]) -> None:
     elif algorithm in ("ml-dsa-65", "ml-dsa-87", "slh-dsa-128s"):
         ext = {"ml-dsa-65": ".mldsa65", "ml-dsa-87": ".mldsa87", "slh-dsa-128s": ".slh"}[algorithm]
         key_path = key_dir / ("agent_key" + ext)
-        pub_path = Path(str(key_path) + ".pub")
+        # Algo-specific pub file: agent_key.mldsa65.pub (not agent_key.pub)
+        pub_path = key_path.parent / (key_path.name + ".pub")
         # PQ algorithms still need a PEM for IC transport
         pem_path = key_dir / "agent_key.pem"
         if not pem_path.exists():
@@ -289,84 +312,55 @@ def _cmd_init(args: list[str]) -> None:
         print(f"  Error: Unhandled algorithm '{algorithm}'.")
         sys.exit(1)
 
-    print(f"  [OK] Public key: {pub_hex[:32]}{'...' if len(pub_hex) > 64 else ''}")
+    if len(pub_hex) <= 64:
+        print(f"  [OK] Public key: {pub_hex}")
+    else:
+        print(f"  [OK] Public key: {pub_hex[:32]}...{pub_hex[-8:]} ({len(pub_hex)} hex)")
     print()
 
-    # --- Step 3: Open Dashboard with pre-filled URL + PoP ---
-    suggested_id = "ak_" + secrets.token_hex(3)
+    # --- Step 3: Register key in Dashboard ---
+    # Compute PoP
+    pop_sig = _compute_pop(algorithm, api_key_id, key_path, signing_key_path)
 
-    # Compute Proof of Possession signature
-    pop_msg = f"aegis-pop:{suggested_id}".encode()
-    pop_sig = ""
-    try:
-        if algorithm == "ed25519":
-            from aegis.crypto import load_private_key, sign_payload
-            sk = load_private_key(key_path)
-            pop_sig = sign_payload(pop_msg, sk)
-        elif algorithm == "hybrid":
-            from aegis.crypto import load_private_key
-            from aegis.schemes import create_scheme
-            ed_sk = load_private_key(key_path)
-            ml_sk_bytes = Path(signing_key_path).read_bytes()
-            scheme = create_scheme("hybrid", (ed_sk, ml_sk_bytes))
-            pop_sig = scheme.sign(pop_msg)
-        else:
-            from aegis.schemes import create_scheme
-            sk_bytes = Path(signing_key_path).read_bytes()
-            scheme = create_scheme(algorithm, sk_bytes)
-            pop_sig = scheme.sign(pop_msg)
-        print("  [OK] Proof of Possession computed")
-    except Exception as e:
-        print(f"  [WARN] Could not compute PoP: {e}")
-        print("  You may need to paste the PoP manually in the Dashboard.")
-
+    # Open Dashboard with all fields pre-filled via URL hash fragment.
+    # Hash fragments are client-side only — no Nginx URI length limit.
+    # Works for Ed25519 (64 hex) AND PQ keys (3904+ hex).
     dash_url = (
         f"{dash_base}"
-        f"?pubkey={quote(pub_hex)}"
-        f"&keyid={quote(suggested_id)}"
-        f"&prefix={quote(suggested_id)}"
+        f"#pubkey={quote(pub_hex)}"
+        f"&keyid={quote(api_key_id)}"
+        f"&prefix=Global"
         + (f"&pop={quote(pop_sig)}" if pop_sig else "")
     )
 
-    print("Step 3/4: Register key in Dashboard")
-    print()
-    print("  Dashboard opens with all fields pre-filled (incl. PoP).")
-    print("  Sign in, accept the DPA, then click ISSUE KEY.")
-    print()
-
-    try:
-        import webbrowser
-        webbrowser.open(dash_url)
-        print("  [OK] Browser opened")
-    except Exception:
-        print(f"  Open this URL: {dash_url}")
-
     if quickstart:
-        api_key_id = suggested_id
         org_id = ""
-        print()
-        print(f"  [OK] Using Key ID: {suggested_id}")
+        print(f"  [OK] Key ID: {api_key_id}")
         print("  [WARN] Set org_id in ~/.aegis/config.toml after Dashboard login.")
     else:
+        print("Step 3/3: Activate in Dashboard")
         print()
-        print(f"  Suggested Key ID: {suggested_id}")
-        api_key_id = _prompt(f"  Enter Key ID from Dashboard [{suggested_id}]: ").strip()
-        if not api_key_id:
-            api_key_id = suggested_id
-
+        try:
+            import webbrowser
+            webbrowser.open(dash_url)
+            print("  [OK] Browser opened — everything is pre-filled.")
+        except Exception:
+            print(f"  Open: {dash_url}")
         print()
-        print("  Your Principal is shown in the Dashboard top-right (after login).")
-        org_id = _prompt("  Enter your Principal from Dashboard: ").strip()
+        print('  Sign in and click "ISSUE KEY". That\'s it.')
+        print()
+        print("  Your Principal is shown top-right in the Dashboard (after login).")
+        org_id = _prompt("  Paste your Principal here: ").strip()
         if not org_id:
             print(
-                "  [WARN] No Principal entered — org_id will be"
-                " derived from PEM (may not match II login)."
+                "  [WARN] No Principal — will be derived from PEM"
+                " (may differ from your login)."
             )
 
     print()
 
-    # --- Step 4: Write config ---
-    print("Step 4/4: Writing config...")
+    # --- Write config ---
+    print("Saving config...")
     cfg_path = write_config(
         canister_id=canister,
         api_key_id=api_key_id,
@@ -388,7 +382,7 @@ def _cmd_init(args: list[str]) -> None:
     try:
         from aegis.transport import CanisterTransport, TransportConfig
 
-        config = TransportConfig(canister_id=canister)
+        config = TransportConfig(canister_id=canister, private_key_path=str(key_path))
         transport = CanisterTransport(config)
         health = transport.call_query("getHealth", [])
         entries = health.get("totalEntries", "?")
@@ -401,13 +395,8 @@ def _cmd_init(args: list[str]) -> None:
     print("=== Setup complete ===")
     print()
     print("Next steps:")
-    print("  1. Test your connection:  aegis test")
-    print("  2. Integrate with your framework:")
-    print("     Pure Python:  @client.trace()")
-    print("     LangChain:    from aegis.langchain import AegisCallbackHandler")
-    print("     CrewAI:       from aegis.crewai import AegisCrewCallback")
-    print("     OpenAI:       from aegis.openai_agents import AegisAgentTracer")
-    print("  3. View your sessions:    aegis list-sessions")
+    print("  1. Test:   python -m aegis test")
+    print("  2. Status: python -m aegis doctor")
     print("  Docs: https://www.aegis-ledger.com/docs")
 
 
@@ -418,6 +407,58 @@ def _prompt(text: str) -> str:
     except (EOFError, KeyboardInterrupt):
         print()
         sys.exit(0)
+
+
+def _compute_pop(algorithm: str, key_id: str, key_path, signing_key_path: str) -> str:
+    """Compute Proof of Possession signature for the given key ID."""
+    from pathlib import Path
+
+    pop_msg = f"aegis-pop:{key_id}".encode()
+    try:
+        if algorithm == "ed25519":
+            from aegis.crypto import load_private_key, sign_payload
+            sk = load_private_key(key_path)
+            pop_sig = sign_payload(pop_msg, sk)
+        elif algorithm == "hybrid":
+            from aegis.crypto import load_private_key
+            from aegis.schemes import create_scheme
+            ed_sk = load_private_key(key_path)
+            ml_sk_bytes = Path(signing_key_path).read_bytes()
+            scheme = create_scheme("hybrid", (ed_sk, ml_sk_bytes))
+            pop_sig = scheme.sign(pop_msg)
+        else:
+            from aegis.schemes import create_scheme
+            sk_bytes = Path(signing_key_path).read_bytes()
+            scheme = create_scheme(algorithm, sk_bytes)
+            pop_sig = scheme.sign(pop_msg)
+        print(f"  [OK] Proof of Possession computed for {key_id}")
+        return pop_sig
+    except Exception as e:
+        print(f"  [WARN] Could not compute PoP: {e}")
+        return ""
+
+
+def _try_clipboard_copy(text: str, label: str = "Text") -> None:
+    """Try to copy text to clipboard. Silent on failure."""
+    try:
+        import subprocess
+        if sys.platform == "win32":
+            subprocess.run(
+                ["clip"], input=text.encode("utf-8"), check=True,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+            print(f"  [OK] {label} copied to clipboard")
+        elif sys.platform == "darwin":
+            subprocess.run(["pbcopy"], input=text.encode("utf-8"), check=True)
+            print(f"  [OK] {label} copied to clipboard")
+        else:
+            subprocess.run(
+                ["xclip", "-selection", "clipboard"],
+                input=text.encode("utf-8"), check=True,
+            )
+            print(f"  [OK] {label} copied to clipboard")
+    except Exception:
+        print("  [INFO] Copy manually — clipboard not available")
 
 
 def _cmd_test(args: list[str]) -> None:

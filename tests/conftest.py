@@ -12,7 +12,7 @@ from unittest.mock import MagicMock
 #
 # Tests that need real ic-py behavior should run in CI (Linux), not locally.
 
-if "ic" not in sys.modules:
+if sys.platform == "win32" and "ic" not in sys.modules:
     _ic_mock = MagicMock()
     sys.modules["ic"] = _ic_mock
     sys.modules["ic.candid"] = _ic_mock.candid

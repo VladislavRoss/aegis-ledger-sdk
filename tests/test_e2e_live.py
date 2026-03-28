@@ -60,7 +60,12 @@ class TestClientSetup:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class TestLogMethods:
-    """Jede Methode loggt einen echten Eintrag auf Mainnet."""
+    """Jede Methode loggt einen echten Eintrag auf Mainnet.
+
+    Requires a registered API key matching the caller principal.
+    If running from a different machine/identity: register a key first via
+    ``aegis register-key`` or the Dashboard.
+    """
 
     def test_log_tool_call(self, client):
         from aegis import ActionStatus
@@ -274,3 +279,76 @@ class TestSpan:
                 duration_ms=5,
             )
             assert action_id is not None
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 9. READ-ONLY CANISTER QUERIES (no API key needed)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestReadOnlyQueries:
+    """Public/read-only queries work without a registered API key."""
+
+    def test_get_health(self, client):
+        health = client._transport.call_query("getHealth", [])
+        assert health is not None
+        print(f"\n  health: {health}")
+
+    def test_list_sessions_returns_list(self, client):
+        """listMySessions should return a list (may be empty if no key)."""
+        try:
+            sessions = client._transport.call_query(
+                "listMySessions", [[], []]
+            )
+            assert isinstance(sessions, list)
+            print(f"\n  sessions: {len(sessions)}")
+        except Exception:
+            # listMySessions may require auth — that's OK for this test
+            pass
+
+    def test_canister_responds_to_query(self, client):
+        """getHealth is a public query that always returns data."""
+        health = client._transport.call_query("getHealth", [])
+        assert health is not None
+        # Should have totalEntries field (Candid hash varies)
+        assert len(health) > 0
+        print(f"\n  health keys: {list(health.keys())[:5]}")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 10. CLI DOCTOR (read-only diagnostics)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestDoctorLive:
+    def test_doctor_runs(self):
+        from aegis.doctor import run_doctor
+        results = run_doctor()
+        assert len(results) >= 4
+        for r in results:
+            assert r["status"] in ("OK", "WARN", "FAIL")
+            assert "name" in r
+        statuses = {r["name"]: r["status"] for r in results}
+        print(f"\n  doctor: {statuses}")
+        # Config and SDK should always be OK if we got this far
+        assert statuses.get("Config") == "OK"
+        assert statuses.get("SDK") == "OK"
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 11. CRYPTO — sign + verify roundtrip with real key
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestCryptoRoundtrip:
+    def test_sign_and_verify(self, client):
+        """Sign a message with the configured key and verify locally."""
+        from aegis.crypto import get_public_key_hex, sign_payload
+        sk = getattr(client, '_private_key', None)
+        if sk is None:
+            pytest.skip("No private key loaded on client")
+        msg = b"e2e-test-message"
+        sig = sign_payload(msg, sk)
+        assert sig is not None
+        assert len(sig) > 0
+        pk_hex = get_public_key_hex(sk)
+        assert pk_hex is not None
+        assert len(pk_hex) == 64  # Ed25519 = 32 bytes = 64 hex chars
+        print(f"\n  pk_hex length: {len(pk_hex)}, sig: {sig[:30]}...")

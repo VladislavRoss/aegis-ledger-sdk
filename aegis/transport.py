@@ -379,13 +379,17 @@ class CanisterTransport:
         # H-3 FIX: Extract raw values from Candid args so they survive
         # JSON serialization. ic-py Types objects are NOT JSON-serializable,
         # so json.dumps(default=str) corrupts them irreversibly.
-        raw_values = [arg["value"] for arg in args]
+        # Bytes (Principal) are stored as hex strings to avoid corruption.
+        raw_values = []
+        for arg in args:
+            val = arg["value"]
+            raw_values.append(val.hex() if isinstance(val, (bytes, bytearray)) else val)
         entry = {
             "method": method,
             "raw_values": raw_values,
             "timestamp_ms": int(time.time() * 1000),
             "canister_id": self._config.canister_id,
-            "spill_version": 2,
+            "spill_version": 3,
         }
         # H-1: create/append with 0o600 (owner read/write only)
         fd = os.open(str(self._spill_path), os.O_CREAT | os.O_WRONLY | os.O_APPEND, 0o600)
@@ -451,26 +455,90 @@ class CanisterTransport:
                     logger.error("Discarding spill entry with disallowed method %r", method)
                     continue
 
-                # H-3 FIX: Rebuild Candid args from stored raw values
-                if entry.get("spill_version") == 2:
+                # Rebuild Candid args from stored raw values
+                spill_ver = entry.get("spill_version", 1)
+                if spill_ver >= 2:
                     v = entry["raw_values"]
+
+                    # Validate org_id (index 1) — detect corruption from
+                    # old entries where bytes were serialized via str()
+                    org_id_val = str(v[1])
+                    if org_id_val.startswith(("b'", 'b"', "b\\")) or not org_id_val:
+                        logger.warning(
+                            "Discarding spill entry with corrupt principal: %s",
+                            org_id_val[:50],
+                        )
+                        continue
+
+                    # v3: org_id is stored as hex of principal bytes.
+                    # _build_add_ledger_entry_args expects principal text,
+                    # but for v3 we can pass hex directly via bytes.
+                    if spill_ver >= 3:
+                        # v3 stores principal as hex — convert to bytes
+                        try:
+                            org_id_bytes = bytes.fromhex(org_id_val)
+                        except ValueError:
+                            logger.warning(
+                                "Discarding spill entry with invalid principal hex: %s",
+                                org_id_val[:50],
+                            )
+                            continue
+
                     # v[5] is the variant dict, e.g. {"toolCall": null}
                     variant_dict = v[5]
                     action_type_str = _REVERSE_ACTION_TYPE_MAP[next(iter(variant_dict))]
-                    args = _build_add_ledger_entry_args(
-                        action_id=v[0], org_id=v[1], agent_id=v[2],
-                        session_id=v[3], sequence_number=v[4],
-                        action_type=action_type_str, tool=v[6],
-                        input_hash=v[7], output_hash=v[8],
-                        input_preview=v[9], output_preview=v[10],
-                        duration_ms=v[11], status=v[12],
-                        parent_action_id=v[13], decision_reasoning=v[14],
-                        confidence_score=v[15], framework=v[16],
-                        model_id=v[17], client_timestamp_ms=v[18],
-                        payload_signature=v[19], chain_hash=v[20],
-                        previous_chain_hash=v[21], payload_hex=v[22],
-                        key_id=v[23],
-                    )
+
+                    if spill_ver >= 3:
+                        # Build args directly with pre-converted principal bytes
+                        from ic.candid import Types  # type: ignore[import-untyped]
+                        _action_type_variant = Types.Variant({
+                            "toolCall": Types.Null, "decision": Types.Null,
+                            "observation": Types.Null, "error": Types.Null,
+                            "humanOverride": Types.Null,
+                        })
+                        args = [
+                            {"type": Types.Text, "value": v[0]},
+                            {"type": Types.Principal, "value": org_id_bytes},
+                            {"type": Types.Text, "value": v[2]},
+                            {"type": Types.Text, "value": v[3]},
+                            {"type": Types.Nat, "value": v[4]},
+                            {"type": _action_type_variant,
+                             "value": action_type_to_candid_variant(action_type_str)},
+                            {"type": Types.Text, "value": v[6]},
+                            {"type": Types.Text, "value": v[7]},
+                            {"type": Types.Text, "value": v[8]},
+                            {"type": Types.Text, "value": v[9]},
+                            {"type": Types.Text, "value": v[10]},
+                            {"type": Types.Nat, "value": v[11]},
+                            {"type": Types.Text, "value": v[12]},
+                            {"type": Types.Text, "value": v[13]},
+                            {"type": Types.Text, "value": v[14]},
+                            {"type": Types.Float64, "value": v[15]},
+                            {"type": Types.Text, "value": v[16]},
+                            {"type": Types.Text, "value": v[17]},
+                            {"type": Types.Int, "value": v[18]},
+                            {"type": Types.Text, "value": v[19]},
+                            {"type": Types.Text, "value": v[20]},
+                            {"type": Types.Text, "value": v[21]},
+                            {"type": Types.Text, "value": v[22]},
+                            {"type": Types.Text, "value": v[23]},
+                        ]
+                    else:
+                        # v2: org_id is text — pass through
+                        args = _build_add_ledger_entry_args(
+                            action_id=v[0], org_id=v[1], agent_id=v[2],
+                            session_id=v[3], sequence_number=v[4],
+                            action_type=action_type_str, tool=v[6],
+                            input_hash=v[7], output_hash=v[8],
+                            input_preview=v[9], output_preview=v[10],
+                            duration_ms=v[11], status=v[12],
+                            parent_action_id=v[13], decision_reasoning=v[14],
+                            confidence_score=v[15], framework=v[16],
+                            model_id=v[17], client_timestamp_ms=v[18],
+                            payload_signature=v[19], chain_hash=v[20],
+                            previous_chain_hash=v[21], payload_hex=v[22],
+                            key_id=v[23],
+                        )
                 else:
                     # Legacy v1 format — args contain stringified Types,
                     # cannot be reconstructed. Log and discard.

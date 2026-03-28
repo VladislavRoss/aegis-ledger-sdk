@@ -12,15 +12,18 @@ Usage:
     client = AegisClient.from_config()  # after: aegis init
     hook = AegisAutoGenHook(client)
 
-    # Register with AutoGen runtime
-    runtime.register_hook(hook)
-
-    # Or use directly in agent callbacks
+    # Use directly in agent callbacks (explicit logging):
     agent = AssistantAgent(
         "assistant",
-        llm_config=llm_config,
+        model_client=model_client,
+        tools=[get_weather],
     )
     hook.on_message_sent(sender="user", receiver="assistant", message="Hello")
+    hook.on_tool_call(tool_name="get_weather", arguments={"city": "Zurich"}, caller="assistant")
+    hook.on_tool_result(tool_name="get_weather", result="22C sunny", caller="assistant")
+
+    # For auto-interception, use AG2 v0.4+ InterventionHandler:
+    # runtime = SingleThreadedAgentRuntime(intervention_handlers=[AegisInterventionHandler(client)])
 """
 
 from __future__ import annotations

@@ -142,7 +142,7 @@ class TestMLDSA87Keygen:
 
         key_file = tmp_path / "test.mldsa87"
         _, pub_hex = generate_mldsa87_keypair(key_file)
-        pub_file = key_file.with_suffix(".pub")
+        pub_file = key_file.parent / (key_file.name + ".pub")
         assert pub_file.exists()
         assert pub_file.read_text().strip() == pub_hex
 

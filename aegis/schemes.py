@@ -369,7 +369,7 @@ def generate_mldsa65_keypair(path: str | Path) -> tuple[bytes, str]:
     key_path.chmod(0o600)
 
     pub_hex = pk.hex()
-    pub_path = key_path.with_suffix(".pub")
+    pub_path = key_path.parent / (key_path.name + ".pub")
     pub_path.write_text(pub_hex + "\n")
 
     return sk, pub_hex
@@ -427,7 +427,7 @@ def generate_mldsa87_keypair(path: str | Path) -> tuple[bytes, str]:
     key_path.chmod(0o600)
 
     pub_hex = pk.hex()
-    pub_path = key_path.with_suffix(".pub")
+    pub_path = key_path.parent / (key_path.name + ".pub")
     pub_path.write_text(pub_hex + "\n")
 
     return sk, pub_hex
@@ -485,7 +485,7 @@ def generate_slhdsa128s_keypair(path: str | Path) -> tuple[bytes, str]:
     key_path.chmod(0o600)
 
     pub_hex = pk.hex()
-    pub_path = key_path.with_suffix(".pub")
+    pub_path = key_path.parent / (key_path.name + ".pub")
     pub_path.write_text(pub_hex + "\n")
 
     return sk, pub_hex
@@ -533,10 +533,14 @@ def generate_hybrid_keypair(
     ed_key, ed_pub_hex = generate_keypair(pem_path)
     ml_sk, ml_pub_hex = generate_mldsa65_keypair(mldsa_path)
 
-    # Clean up stray .pub files from sub-generators (both write <name>.pub)
-    for stray in (pem_path.with_suffix(".pub"), mldsa_path.with_suffix(".pub")):
+    # Clean up stray .pub files from sub-generators
+    for stray in (
+        pem_path.with_suffix(".pub"),                       # Ed25519: agent_key.pub
+        pem_path.parent / (pem_path.name + ".pub"),         # Ed25519: agent_key.pem.pub (unlikely)
+    ):
         if stray.exists():
             stray.unlink()
+    # Keep agent_key.mldsa65.pub — needed for hybrid pub derivation
 
     hybrid_pub_hex = ed_pub_hex + ml_pub_hex  # 64 + 3904 = 3968 hex
     pub_path = key_path.with_suffix(".hybrid.pub")

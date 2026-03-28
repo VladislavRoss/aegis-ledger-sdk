@@ -40,14 +40,21 @@ _MAX_PENDING_TIMERS = 10_000
 _TIMER_TTL_MS = 3_600_000  # 1 hour
 
 
-class AegisCallbackHandler:
+# Inherit from BaseCallbackHandler when available — gives us default
+# no-op implementations for any new methods LangChain adds (self-healing).
+try:
+    from langchain_core.callbacks import BaseCallbackHandler as _LCBase
+except ImportError:
+    _LCBase = object  # type: ignore[assignment,misc]
+
+
+class AegisCallbackHandler(_LCBase):  # type: ignore[misc]
     """
-    LangChain-compatible callback handler that logs all agent activity
+    LangChain callback handler that logs all agent activity
     to the Aegis Ledger.
 
-    Compatible with LangChain v0.1+ and v0.2+. Uses the BaseCallbackHandler
-    protocol without importing it, so the handler works even if LangChain
-    is not installed (it will just never be invoked).
+    Inherits from ``BaseCallbackHandler`` so any new callback methods
+    added by LangChain automatically get a default no-op (self-healing).
 
     Captures:
       - LLM start/end → logged as "decision" actions

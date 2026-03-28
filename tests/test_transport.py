@@ -248,11 +248,11 @@ class TestSpillBuffer:
         # Add one more — should trigger eviction (H-3: args need "value" key)
         transport._spill_to_disk("addLedgerEntry", [{"type": "text", "value": 1000}])
 
-        # Last entry should be the newest (spill_version 2 stores raw_values)
+        # Last entry should be the newest (spill_version 3 stores raw_values with hex bytes)
         content = spill_file.read_text().strip().split("\n")
         last_entry = json.loads(content[-1])
         assert last_entry["raw_values"] == [1000]
-        assert last_entry["spill_version"] == 2
+        assert last_entry["spill_version"] == 3
 
     # ------------------------------------------------------------------
     # Batch 3: Drain, Retry, Edge Cases

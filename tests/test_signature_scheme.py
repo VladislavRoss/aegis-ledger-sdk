@@ -375,7 +375,7 @@ class TestSLHDSA128sKeygen:
 
         key_file = tmp_path / "test.slh"
         _, pub_hex = generate_slhdsa128s_keypair(key_file)
-        pub_file = key_file.with_suffix(".pub")
+        pub_file = key_file.parent / (key_file.name + ".pub")
         assert pub_file.exists()
         assert pub_file.read_text().strip() == pub_hex
 
@@ -548,7 +548,7 @@ class TestMLDSA65Keygen:
 
         key_file = tmp_path / "test.mldsa65"
         _, pub_hex = generate_mldsa65_keypair(key_file)
-        pub_file = key_file.with_suffix(".pub")
+        pub_file = key_file.parent / (key_file.name + ".pub")
         assert pub_file.exists()
         assert pub_file.read_text().strip() == pub_hex
 
@@ -821,17 +821,18 @@ class TestHybridKeygen:
             generate_hybrid_keypair(key_base)
 
     def test_generate_hybrid_no_stray_pub_files(self, tmp_path):
-        """Only .hybrid.pub should exist, no stray .pem.pub or .mldsa65.pub."""
+        """No stray agent.pub; algo-specific .mldsa65.pub is kept for hybrid derivation."""
         from AEGIS_LEDGER.crypto import generate_hybrid_keypair
 
         key_base = tmp_path / "agent"
         generate_hybrid_keypair(key_base)
         stray_pem_pub = key_base.with_suffix(".pub")
         assert not stray_pem_pub.exists(), f"Stray file found: {stray_pem_pub}"
-        # Only these files should exist
+        # Expected files: PEM, mldsa65 sk, mldsa65 pub (algo-specific), hybrid pub
         expected = {
             key_base.with_suffix(".pem"),
             key_base.with_suffix(".mldsa65"),
+            tmp_path / "agent.mldsa65.pub",
             key_base.with_suffix(".hybrid.pub"),
         }
         actual = set(tmp_path.iterdir())

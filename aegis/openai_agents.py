@@ -1,19 +1,26 @@
 """
 aegis.openai_agents -- OpenAI Agents SDK tracing integration.
 
-Wraps OpenAI Agents SDK runs to log function tool calls, handoffs,
-guardrail checks, and completions to the Aegis Ledger.
+Provides both:
+1. **AegisRunHooks** — a ``RunHooks`` subclass for automatic capture via
+   ``Runner.run(agent, ..., hooks=AegisRunHooks(client))``
+2. **AegisAgentTracer** — manual wrapper with ``trace()`` context manager.
 
-Usage:
+Official RunHooks usage (recommended):
+    from aegis import AegisClient
+    from aegis.openai_agents import AegisRunHooks
+
+    client = AegisClient.from_config()
+    result = await Runner.run(agent, "Hello", hooks=AegisRunHooks(client))
+
+Manual tracer usage:
     from aegis import AegisClient
     from aegis.openai_agents import AegisAgentTracer
 
-    client = AegisClient.from_config()  # after: aegis init
+    client = AegisClient.from_config()
     tracer = AegisAgentTracer(client)
-
-    # Wrap agent run
     with tracer.trace():
-        result = await Runner.run(agent, "Process this request")
+        result = await Runner.run(agent, "Hello")
 """
 
 from __future__ import annotations
@@ -274,3 +281,134 @@ class AegisAgentTracer:
         if active_tid:
             meta["trace_id"] = active_tid
         return meta
+
+
+# ======================================================================
+# Official RunHooks subclass for OpenAI Agents SDK
+# ======================================================================
+#
+# Usage:
+#   from agents import Agent, Runner
+#   from aegis.openai_agents import AegisRunHooks
+#
+#   client = AegisClient.from_config()
+#   result = await Runner.run(agent, "Hello", hooks=AegisRunHooks(client))
+#
+# Captures on_agent_start, on_agent_end, on_tool_start, on_tool_end,
+# on_handoff automatically — no manual calls needed.
+
+
+# Inherit from RunHooks when available — gives us default no-op
+# implementations for any new methods the SDK adds (self-healing).
+try:
+    from agents import RunHooks as _RunHooksBase
+except ImportError:
+    _RunHooksBase = object  # type: ignore[assignment,misc]
+
+
+class AegisRunHooks(_RunHooksBase):  # type: ignore[misc]
+    """``RunHooks`` subclass for the OpenAI Agents SDK.
+
+    Drop-in replacement — pass as ``hooks=`` to ``Runner.run()``.
+    Inherits from ``RunHooks`` so any new lifecycle methods added
+    by the SDK automatically get a default no-op (self-healing).
+
+    Overrides:
+      - ``on_agent_start(context, agent)``
+      - ``on_agent_end(context, agent, output)``
+      - ``on_tool_start(context, agent, tool)``
+      - ``on_tool_end(context, agent, tool, result)``
+      - ``on_handoff(context, from_agent, to_agent)``
+    """
+
+    def __init__(self, client: AegisClient) -> None:
+        self._client = client
+        self._start_times: dict[str, int] = {}
+        self._lock = threading.Lock()
+
+    async def on_agent_start(self, context: Any, agent: Any) -> None:
+        agent_name = getattr(agent, "name", str(agent))
+        with self._lock:
+            self._start_times[f"agent:{agent_name}"] = int(time.time() * 1000)
+        try:
+            self._client.log_observation(
+                input_data={"event": "agent_start", "agent": agent_name},
+                output_data={"status": "started"},
+                metadata={"framework": "openai_agents"},
+            )
+        except Exception:
+            logger.warning("Failed to log agent start", exc_info=True)
+
+    async def on_agent_end(self, context: Any, agent: Any, output: Any) -> None:
+        agent_name = getattr(agent, "name", str(agent))
+        elapsed = self._elapsed(f"agent:{agent_name}")
+        usage = getattr(context, "usage", None)
+        try:
+            self._client.log_decision(
+                reasoning=f"Agent {agent_name} completed",
+                confidence=1.0,
+                input_data={"agent": agent_name},
+                output_data={
+                    "status": "completed",
+                    "usage": str(usage)[:_PREVIEW_MAX] if usage else "",
+                },
+                duration_ms=elapsed,
+                metadata={"framework": "openai_agents"},
+            )
+        except Exception:
+            logger.warning("Failed to log agent end", exc_info=True)
+
+    async def on_tool_start(self, context: Any, agent: Any, tool: Any) -> None:
+        tool_name = getattr(tool, "name", str(tool))
+        with self._lock:
+            self._start_times[f"tool:{tool_name}"] = int(time.time() * 1000)
+
+    async def on_tool_end(
+        self, context: Any, agent: Any, tool: Any, result: Any,
+    ) -> None:
+        tool_name = getattr(tool, "name", str(tool))
+        elapsed = self._elapsed(f"tool:{tool_name}")
+        try:
+            self._client.log_tool_call(
+                tool=tool_name,
+                input_data={"agent": getattr(agent, "name", "")},
+                output_data={
+                    "result_preview": str(result)[:_PREVIEW_MAX],
+                },
+                duration_ms=elapsed,
+                status=ActionStatus.SUCCESS,
+                metadata={"framework": "openai_agents"},
+            )
+        except Exception:
+            logger.warning("Failed to log tool end", exc_info=True)
+
+    async def on_llm_start(
+        self, context: Any, agent: Any, *args: Any, **kwargs: Any,
+    ) -> None:
+        pass  # Intentionally not logged — accepts any future params
+
+    async def on_llm_end(
+        self, context: Any, agent: Any, *args: Any, **kwargs: Any,
+    ) -> None:
+        pass  # Intentionally not logged — accepts any future params
+
+    async def on_handoff(
+        self, context: Any, from_agent: Any, to_agent: Any,
+    ) -> None:
+        source_name = getattr(from_agent, "name", str(from_agent))
+        target_name = getattr(to_agent, "name", str(to_agent))
+        try:
+            self._client.log_decision(
+                reasoning=f"Handoff: {source_name} -> {target_name}",
+                confidence=1.0,
+                input_data={"from": source_name, "to": target_name},
+                output_data={"status": "handoff"},
+                metadata={"framework": "openai_agents"},
+            )
+        except Exception:
+            logger.warning("Failed to log handoff", exc_info=True)
+
+    def _elapsed(self, key: str) -> int:
+        with self._lock:
+            start = self._start_times.pop(key, None)
+        return (int(time.time() * 1000) - start) if start else 0

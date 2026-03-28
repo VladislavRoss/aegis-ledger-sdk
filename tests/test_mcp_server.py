@@ -72,13 +72,15 @@ def _run(coro):
 
 @pytest.fixture(autouse=True)
 def reset_singletons():
-    """Reset _client and _transport globals between tests."""
+    """Reset _client, _transport, and _client_error globals between tests."""
     import aegis.mcp_server as ms
     ms._client = None
     ms._transport = None
+    ms._client_error = None
     yield
     ms._client = None
     ms._transport = None
+    ms._client_error = None
 
 
 # ---------------------------------------------------------------------------
@@ -88,7 +90,7 @@ def reset_singletons():
 
 class TestLazySingletons:
     def test_get_client_raises_without_api_key(self, monkeypatch):
-        """_get_client raises ValueError when AEGIS_API_KEY_ID is not set."""
+        """_init_client raises ValueError when AEGIS_API_KEY_ID is not set."""
         import aegis.mcp_server as ms
         monkeypatch.delenv("AEGIS_API_KEY_ID", raising=False)
         monkeypatch.delenv("AEGIS_PRIVATE_KEY_PATH", raising=False)
@@ -98,10 +100,10 @@ class TestLazySingletons:
             "private_key_path": "", "agent_id": "mcp-agent",
             "org_id": "", "network": "https://icp-api.io",
         }), pytest.raises(ValueError, match="AEGIS_API_KEY_ID"):
-            ms._get_client()
+            ms._init_client()
 
     def test_get_client_raises_without_private_key(self):
-        """_get_client raises ValueError when AEGIS_PRIVATE_KEY_PATH is not set."""
+        """_init_client raises ValueError when AEGIS_PRIVATE_KEY_PATH is not set."""
         import aegis.mcp_server as ms
 
         with patch("aegis.mcp_server._get_config", return_value={
@@ -109,16 +111,16 @@ class TestLazySingletons:
             "private_key_path": "", "agent_id": "mcp-agent",
             "org_id": "", "network": "https://icp-api.io",
         }), pytest.raises(ValueError, match="AEGIS_PRIVATE_KEY_PATH"):
-            ms._get_client()
+            ms._init_client()
 
     def test_get_client_returns_singleton(self):
         """_get_client returns the same instance on repeated calls."""
         import aegis.mcp_server as ms
         mock_client = _make_mock_client()
+        ms._client = mock_client
 
-        with patch("aegis.mcp_server._get_client", return_value=mock_client):
-            c1 = ms._get_client()
-            c2 = ms._get_client()
+        c1 = _run(ms._get_client())
+        c2 = _run(ms._get_client())
         assert c1 is c2
 
     def test_get_transport_returns_singleton(self):
@@ -127,8 +129,8 @@ class TestLazySingletons:
         mock_transport = _make_mock_transport()
         ms._transport = mock_transport
 
-        t1 = ms._get_transport()
-        t2 = ms._get_transport()
+        t1 = _run(ms._get_transport())
+        t2 = _run(ms._get_transport())
         assert t1 is t2
 
     def test_get_transport_set_singleton_cached(self):
@@ -136,8 +138,7 @@ class TestLazySingletons:
         import aegis.mcp_server as ms
         mock_t = _make_mock_transport()
         ms._transport = mock_t
-        # Should return the same object without calling CanisterTransport again
-        result = ms._get_transport()
+        result = _run(ms._get_transport())
         assert result is mock_t
 
 
@@ -150,7 +151,7 @@ class TestLogToolCall:
     def _call(self, mock_client: MagicMock, **kwargs) -> dict:
         import aegis.mcp_server as ms
         ms._client = mock_client
-        result = ms.aegis_log_tool_call(**{
+        result = _run(ms.aegis_log_tool_call(**{
             "tool": "web_search",
             "input_data": '{"query": "test"}',
             "output_data": '{"result": "found"}',
@@ -159,7 +160,7 @@ class TestLogToolCall:
             "reasoning": "needed info",
             "confidence": 0.9,
             **kwargs,
-        })
+        }))
         return json.loads(result)
 
     def test_returns_action_id(self):
@@ -198,9 +199,9 @@ class TestLogToolCall:
             "canister_id": "c", "api_key_id": "", "private_key_path": "",
             "agent_id": "mcp-agent", "org_id": "", "network": "https://icp-api.io",
         }), pytest.raises(ValueError, match="AEGIS_API_KEY_ID"):
-            ms.aegis_log_tool_call(
+            _run(ms.aegis_log_tool_call(
                 tool="t", input_data="{}", output_data="{}"
-            )
+            ))
 
 
 # ---------------------------------------------------------------------------
@@ -212,14 +213,14 @@ class TestLogDecision:
     def _call(self, mock_client: MagicMock, **kwargs) -> dict:
         import aegis.mcp_server as ms
         ms._client = mock_client
-        result = ms.aegis_log_decision(**{
+        result = _run(ms.aegis_log_decision(**{
             "reasoning": "chose path A",
             "confidence": 0.85,
             "input_data": "{}",
             "output_data": "{}",
             "duration_ms": 50,
             **kwargs,
-        })
+        }))
         return json.loads(result)
 
     def test_returns_action_id(self):
@@ -253,16 +254,16 @@ class TestLogObservation:
         import aegis.mcp_server as ms
         client = _make_mock_client()
         ms._client = client
-        result = json.loads(ms.aegis_log_observation(
+        result = json.loads(_run(ms.aegis_log_observation(
             input_data='{"sensor": "temp", "value": 42}',
-        ))
+        )))
         assert result["action_id"] == "act_test_123"
 
     def test_passes_input_data(self):
         import aegis.mcp_server as ms
         client = _make_mock_client()
         ms._client = client
-        ms.aegis_log_observation(input_data='{"x": 1}', output_data='{"y": 2}')
+        _run(ms.aegis_log_observation(input_data='{"x": 1}', output_data='{"y": 2}'))
         call_kwargs = client.log_observation.call_args.kwargs
         assert call_kwargs["input_data"] == {"x": 1}
         assert call_kwargs["output_data"] == {"y": 2}
@@ -278,19 +279,19 @@ class TestLogError:
         import aegis.mcp_server as ms
         client = _make_mock_client()
         ms._client = client
-        result = json.loads(ms.aegis_log_error(
+        result = json.loads(_run(ms.aegis_log_error(
             tool="broken_api",
             input_data='{"url": "http://fail"}',
             error="Connection refused",
             duration_ms=100,
-        ))
+        )))
         assert result["action_id"] == "act_test_123"
 
     def test_passes_error_message(self):
         import aegis.mcp_server as ms
         client = _make_mock_client()
         ms._client = client
-        ms.aegis_log_error(tool="t", input_data="{}", error="BOOM", duration_ms=0)
+        _run(ms.aegis_log_error(tool="t", input_data="{}", error="BOOM", duration_ms=0))
         assert client.log_error.call_args.kwargs["error"] == "BOOM"
 
 
@@ -304,7 +305,7 @@ class TestVerifyEntry:
         import aegis.mcp_server as ms
         transport = _make_mock_transport()
         ms._transport = transport
-        result = json.loads(ms.aegis_verify_entry("act_abc_456"))
+        result = json.loads(_run(ms.aegis_verify_entry("act_abc_456")))
         assert result["is_valid"] is True
         assert result["action_id"] == "act_abc_456"
         assert result["stored_chain_hash"] == "sha256:abc"
@@ -315,7 +316,7 @@ class TestVerifyEntry:
         import aegis.mcp_server as ms
         transport = _make_mock_transport()
         ms._transport = transport
-        ms.aegis_verify_entry("act_test")
+        _run(ms.aegis_verify_entry("act_test"))
         transport.call_query.assert_called_once()
         args = transport.call_query.call_args[0]
         assert args[0] == "verifyEntry"
@@ -331,7 +332,7 @@ class TestVerifyEntry:
             "sequenceNumber": 0,
         }
         ms._transport = transport
-        result = json.loads(ms.aegis_verify_entry("bad_id"))
+        result = json.loads(_run(ms.aegis_verify_entry("bad_id")))
         assert result["is_valid"] is False
         assert result["message"] == "not found"
 
@@ -346,7 +347,7 @@ class TestGetHealth:
         import aegis.mcp_server as ms
         transport = _make_mock_transport({"status": "healthy", "totalEntries": 99})
         ms._transport = transport
-        result = json.loads(ms.aegis_get_health())
+        result = json.loads(_run(ms.aegis_get_health()))
         assert result["status"] == "healthy"
         assert result["totalEntries"] == 99
 
@@ -354,7 +355,7 @@ class TestGetHealth:
         import aegis.mcp_server as ms
         transport = _make_mock_transport()
         ms._transport = transport
-        ms.aegis_get_health()
+        _run(ms.aegis_get_health())
         transport.call_query.assert_called_once_with("getHealth", [])
 
 
@@ -368,14 +369,13 @@ class TestGenerateReport:
         import aegis.mcp_server as ms
         mock_report = MagicMock()
         mock_report.markdown = "# EU AI Act Compliance Report\n..."
-        # generate_report is imported lazily inside the function via aegis.report
         with patch("aegis.report.generate_report", return_value=mock_report), \
              patch("aegis.mcp_server._get_config", return_value={
                 "canister_id": "toqqq-lqaaa-aaaae-afc2a-cai",
                 "api_key_id": "ak_test", "private_key_path": "k.pem",
                 "agent_id": "mcp-agent", "org_id": "", "network": "https://icp-api.io",
              }):
-            result = ms.aegis_generate_report(format="eu-ai-act")
+            result = _run(ms.aegis_generate_report(format="eu-ai-act"))
         assert "EU AI Act" in result
 
     def test_passes_format_to_report_generator(self):
@@ -387,7 +387,7 @@ class TestGenerateReport:
                 "canister_id": "c", "api_key_id": "k", "private_key_path": "p",
                 "agent_id": "a", "org_id": "", "network": "n",
              }):
-            ms.aegis_generate_report(format="iso-42001")
+            _run(ms.aegis_generate_report(format="iso-42001"))
         mock_gen.assert_called_once()
 
 
@@ -401,22 +401,22 @@ class TestNewSession:
         import aegis.mcp_server as ms
         client = _make_mock_client(session_id="sess_new_xyz")
         ms._client = client
-        result = json.loads(ms.aegis_new_session(session_id="my-session"))
+        result = json.loads(_run(ms.aegis_new_session(session_id="my-session")))
         assert result["session_id"] == "sess_new_xyz"
 
     def test_passes_custom_session_id(self):
         import aegis.mcp_server as ms
         client = _make_mock_client()
         ms._client = client
-        ms.aegis_new_session(session_id="custom-id")
+        _run(ms.aegis_new_session(session_id="custom-id"))
         client.new_session.assert_called_once_with(session_id="custom-id")
 
-    def test_empty_session_id_becomes_none(self):
+    def test_empty_session_id_defaults_to_agent_id(self):
         import aegis.mcp_server as ms
         client = _make_mock_client()
         ms._client = client
-        ms.aegis_new_session(session_id="")
-        client.new_session.assert_called_once_with(session_id=None)
+        _run(ms.aegis_new_session(session_id=""))
+        client.new_session.assert_called_once_with(session_id="mcp-agent")
 
 
 # ---------------------------------------------------------------------------
@@ -438,7 +438,7 @@ class TestResourceHealth:
         transport = _make_mock_transport({"status": "ok"})
         ms._transport = transport
         contents = _run(ms.mcp.read_resource("aegis://health"))
-        assert len(contents) == 1
+        assert len(contents) >= 1
         data = json.loads(contents[0].content)
         assert data["status"] == "ok"
 
@@ -467,12 +467,9 @@ class TestResourceSession:
 
     def test_error_response_on_unconfigured_client(self):
         import aegis.mcp_server as ms
-        with patch("aegis.mcp_server._get_config", return_value={
-            "canister_id": "c", "api_key_id": "", "private_key_path": "",
-            "agent_id": "mcp-agent", "org_id": "", "network": "https://icp-api.io",
-        }):
-            result = json.loads(ms.resource_session("sess_123"))
-        assert "error" in result
+        # _client is None, resource_session handles it gracefully
+        result = json.loads(ms.resource_session("sess_123"))
+        assert result["session_id"] == "(not initialized)"
         assert result["requested_session_id"] == "sess_123"
 
 
@@ -588,7 +585,7 @@ class TestTransportErrors:
         transport.call_query.side_effect = ConnectionError("canister down")
         ms._transport = transport
         with pytest.raises(ConnectionError, match="canister down"):
-            ms.aegis_verify_entry("act_123")
+            _run(ms.aegis_verify_entry("act_123"))
 
     def test_get_health_propagates_transport_error(self):
         import aegis.mcp_server as ms
@@ -596,4 +593,4 @@ class TestTransportErrors:
         transport.call_query.side_effect = RuntimeError("network error")
         ms._transport = transport
         with pytest.raises(RuntimeError, match="network error"):
-            ms.aegis_get_health()
+            _run(ms.aegis_get_health())

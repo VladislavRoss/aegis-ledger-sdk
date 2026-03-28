@@ -1,22 +1,28 @@
 """
 aegis.anthropic_sdk -- Anthropic Agent SDK (Claude) tracing integration.
 
-Hooks into the Anthropic Agent SDK's lifecycle events to log
-tool calls, session lifecycle, and subagent activity to the Aegis Ledger.
+Provides both:
+1. **HookMatcher-compatible async hooks** for the official Claude Agent SDK
+   (PreToolUse, PostToolUse, SessionStart, SessionEnd, Stop)
+2. **AegisAnthropicTracer** class for manual/explicit integration.
 
-Usage:
+Official Claude Agent SDK hook usage (recommended):
+    from aegis import AegisClient
+    from aegis.anthropic_sdk import aegis_hooks
+
+    client = AegisClient.from_config()
+    hooks = aegis_hooks(client)
+
+    # Pass to ClaudeAgentOptions:
+    # options = ClaudeAgentOptions(hooks=hooks)
+
+Manual tracer usage:
     from aegis import AegisClient
     from aegis.anthropic_sdk import AegisAnthropicTracer
 
-    client = AegisClient.from_config()  # after: aegis init
+    client = AegisClient.from_config()
     tracer = AegisAnthropicTracer(client)
-
-    # Wire into Anthropic Agent SDK hooks
     tracer.on_tool_use("search", {"query": "test"}, {"results": [...]})
-    tracer.on_session_start("session_123")
-    tracer.on_session_end("session_123")
-    tracer.on_subagent_start("sub_1", "researcher")
-    tracer.on_subagent_end("sub_1", "researcher")
 """
 
 from __future__ import annotations
@@ -292,3 +298,85 @@ class AegisAnthropicTracer:
         stale = [k for k, v in self._start_times.items() if v < cutoff]
         for k in stale:
             del self._start_times[k]
+
+
+# ======================================================================
+# Claude Agent SDK HookMatcher-compatible async hooks
+# ======================================================================
+#
+# These functions match the signature the Claude Agent SDK expects:
+#   async def hook(input_data: dict, tool_use_id: str | None, context) -> dict
+#
+# Usage with ClaudeAgentOptions:
+#   from claude_agent_sdk import ClaudeAgentOptions, HookMatcher
+#   from aegis.anthropic_sdk import aegis_hooks
+#
+#   client = AegisClient.from_config()
+#   options = ClaudeAgentOptions(hooks=aegis_hooks(client))
+
+
+def aegis_hooks(client: AegisClient) -> dict[str, list]:
+    """Build a hooks dict for ``ClaudeAgentOptions``.
+
+    Returns a dict mapping hook event names to lists of HookMatcher-like
+    dicts, ready to be spread into ``ClaudeAgentOptions(hooks=...)``.
+
+    This captures:
+      - **PostToolUse**: Every tool call with name, input, output
+      - **SessionStart**: Agent session begin
+      - **Stop**: Agent session end
+
+    Args:
+        client: An initialized AegisClient instance.
+
+    Returns:
+        Dict with "PostToolUse", "SessionStart", "Stop" keys.
+        Each value is a list suitable for HookMatcher ``hooks`` param.
+    """
+    tracer = AegisAnthropicTracer(client)
+
+    async def _post_tool_use(
+        input_data: dict[str, Any],
+        tool_use_id: str | None,
+        context: Any,
+    ) -> dict[str, Any]:
+        """PostToolUse hook — logs every tool call to Aegis Ledger."""
+        tool_name = input_data.get("tool_name", "unknown")
+        tool_input = input_data.get("tool_input", {})
+        tool_output = input_data.get("tool_output", {})
+        tracer.on_tool_use(
+            tool_name=tool_name,
+            tool_input=tool_input,
+            tool_response=tool_output,
+            tool_use_id=tool_use_id or "",
+        )
+        return {}
+
+    async def _session_start(
+        input_data: dict[str, Any],
+        tool_use_id: str | None,
+        context: Any,
+    ) -> dict[str, Any]:
+        """SessionStart hook — logs agent session begin."""
+        session_id = input_data.get("session_id", "")
+        tracer.on_session_start(session_id=session_id)
+        return {}
+
+    async def _stop(
+        input_data: dict[str, Any],
+        tool_use_id: str | None,
+        context: Any,
+    ) -> dict[str, Any]:
+        """Stop hook — logs agent session end."""
+        session_id = input_data.get("session_id", "")
+        summary = input_data.get("summary", "")
+        tracer.on_stop(session_id=session_id, summary=summary)
+        return {}
+
+    # Return format matches ClaudeAgentOptions hooks dict.
+    # Users wrap with HookMatcher: HookMatcher(hooks=[fn])
+    return {
+        "PostToolUse": [_post_tool_use],
+        "SessionStart": [_session_start],
+        "Stop": [_stop],
+    }

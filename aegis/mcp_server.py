@@ -17,14 +17,25 @@ Or programmatically:
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
 import logging
 import os
+import threading
+from pathlib import Path
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
 logger = logging.getLogger("aegis.mcp")
+
+# Maximum seconds before a tool call is aborted (prevents infinite hangs)
+_TOOL_TIMEOUT = 30
+
+# Chain state persistence (shared with flush hook)
+_CHAIN_STATE_PATH = Path.home() / ".aegis" / "agent_chain_state.json"
+_chain_lock = threading.Lock()
 
 # ---------------------------------------------------------------------------
 # Candid hash-key mapping (ic-py returns field hashes, not names)
@@ -69,6 +80,32 @@ _client: Any = None
 _transport: Any = None
 
 
+def _load_chain_state(agent_id: str) -> dict[str, Any]:
+    """Load persisted chain state for an agent (shared with flush hook)."""
+    if not _CHAIN_STATE_PATH.exists():
+        return {"sequence": 0, "chain_hash": ""}
+    try:
+        data = json.loads(_CHAIN_STATE_PATH.read_text(encoding="utf-8"))
+        return data.get(agent_id, {"sequence": 0, "chain_hash": ""})
+    except (json.JSONDecodeError, OSError):
+        return {"sequence": 0, "chain_hash": ""}
+
+
+def _save_chain_state(agent_id: str, sequence: int, chain_hash: str) -> None:
+    """Persist chain state for an agent (atomic write, shared with flush hook)."""
+    with _chain_lock:
+        all_state: dict[str, Any] = {}
+        if _CHAIN_STATE_PATH.exists():
+            with contextlib.suppress(json.JSONDecodeError, OSError):
+                all_state = json.loads(
+                    _CHAIN_STATE_PATH.read_text(encoding="utf-8")
+                )
+        all_state[agent_id] = {"sequence": sequence, "chain_hash": chain_hash}
+        tmp = _CHAIN_STATE_PATH.with_suffix(".tmp")
+        tmp.write_text(json.dumps(all_state, indent=2), encoding="utf-8")
+        tmp.replace(_CHAIN_STATE_PATH)
+
+
 def _get_config() -> dict[str, str]:
     """Read config from env vars, falling back to ~/.aegis/config.toml."""
     cfg: dict[str, str] = {}
@@ -86,6 +123,7 @@ def _get_config() -> dict[str, str]:
         cfg["org_id"] = client_section.get("org_id", "")
         cfg["network"] = client_section.get("network", "")
         cfg["signature_scheme"] = signing.get("default_scheme", "")
+        cfg["signing_key_path"] = signing.get("signing_key_path", "")
     except Exception:
         pass
 
@@ -108,12 +146,8 @@ def _get_config() -> dict[str, str]:
     return cfg
 
 
-def _get_client() -> Any:
-    """Lazy-init the AegisClient singleton."""
-    global _client
-    if _client is not None:
-        return _client
-
+def _init_client() -> Any:
+    """Initialize the AegisClient (blocking, call from thread)."""
     from aegis import AegisClient
 
     cfg = _get_config()
@@ -128,45 +162,177 @@ def _get_client() -> Any:
             "or in ~/.aegis/config.toml [client] private_key_path."
         )
 
+    # Use agent_id as session_id — agent-centric logging, not random sessions
+    agent_id = cfg["agent_id"]
     kwargs: dict[str, Any] = {
         "canister_id": cfg["canister_id"],
         "api_key_id": cfg["api_key_id"],
         "private_key_path": cfg["private_key_path"],
-        "agent_id": cfg["agent_id"],
+        "agent_id": agent_id,
+        "session_id": agent_id,
         "network": cfg["network"],
         "fail_open": True,
         "redact_pii": True,
     }
     if cfg.get("org_id"):
         kwargs["org_id"] = cfg["org_id"]
+    if cfg.get("signature_scheme"):
+        kwargs["signature_scheme"] = cfg["signature_scheme"]
+    if cfg.get("signing_key_path"):
+        kwargs["signing_key_path"] = cfg["signing_key_path"]
 
-    _client = AegisClient(**kwargs)
+    client = AegisClient(**kwargs)
+
+    # Restore chain state for continuous hash chain (shared with flush hook)
+    state = _load_chain_state(agent_id)
+    if state["sequence"] > 0:
+        client._sequence = state["sequence"]
+    if state["chain_hash"]:
+        client._chain_heads[agent_id] = state["chain_hash"]
+
+    # Auto-recovery: sync with canister if local state might be stale.
+    # This prevents sequence desync when multiple processes write or
+    # after crashes where chain state wasn't persisted.
+    try:
+        canister_state = _sync_sequence_from_canister(cfg, agent_id)
+        if canister_state is not None:
+            canister_seq, canister_hash = canister_state
+            # Canister stores "last used" seq; SDK stores "next to use"
+            canister_next = canister_seq + 1
+            if canister_next > client._sequence:
+                logger.warning(
+                    "Chain state stale: local=%d canister=%d → syncing",
+                    client._sequence, canister_next,
+                )
+                client._sequence = canister_next
+                if canister_hash:
+                    client._chain_heads[agent_id] = canister_hash
+                _save_chain_state(agent_id, canister_next, canister_hash)
+    except Exception:
+        logger.debug("Canister sync skipped (offline or no admin access)")
+
+    logger.info(
+        "MCP client initialized: agent=%s seq=%d",
+        agent_id, client._sequence,
+    )
+    return client
+
+
+def _sync_sequence_from_canister(
+    cfg: dict[str, str], session_id: str,
+) -> tuple[int, str] | None:
+    """Query canister for the actual sequence head of a session.
+
+    Uses the public ``getSessionSequenceHead`` endpoint — no auth needed.
+    Returns (last_sequence, chain_hash) or None if unavailable.
+    Works for any agent, any org, at any scale.
+    """
+    from aegis.transport import CanisterTransport, TransportConfig
+
+    transport = CanisterTransport(TransportConfig(
+        canister_id=cfg["canister_id"],
+        network=cfg["network"],
+    ))
+
+    from ic.candid import Types  # type: ignore[import-untyped]
+
+    raw = transport.call_query(
+        "getSessionSequenceHead",
+        [{"type": Types.Text, "value": session_id}],
+    )
+    if not isinstance(raw, dict):
+        return None
+
+    # Parse response: {sequenceHead: ?Nat, chainHash: Text}
+    # ic-py returns Candid field hashes as keys
+    seq_head = None
+    chain_hash = ""
+    for _k, v in raw.items():
+        if isinstance(v, list) and len(v) == 1 and isinstance(v[0], int):
+            seq_head = v[0]  # ?Nat = [n] when Some
+        elif isinstance(v, list) and len(v) == 0:
+            seq_head = None  # ?Nat = [] when None
+        elif isinstance(v, str):
+            chain_hash = v
+
+    if seq_head is None:
+        return None
+    return (seq_head, chain_hash)
+
+
+async def _get_client() -> Any:
+    """Lazy-init the AegisClient singleton (non-blocking)."""
+    global _client
+    if _client is not None:
+        return _client
+
+    _client = await asyncio.wait_for(
+        asyncio.to_thread(_init_client),
+        timeout=_TOOL_TIMEOUT,
+    )
     return _client
 
 
-def _get_transport() -> Any:
-    """Lazy-init a read-only transport for queries (health, verify)."""
+def _persist_client_state() -> None:
+    """Save current client chain state after a successful log call."""
+    if _client is None:
+        return
+    try:
+        agent_id = getattr(_client, "_agent_id", "")
+        if not agent_id or not isinstance(agent_id, str):
+            return
+        seq = getattr(_client, "_sequence", 0)
+        if not isinstance(seq, int):
+            return
+        heads = getattr(_client, "_chain_heads", {})
+        chain_hash = heads.get(agent_id, "")
+        if not isinstance(chain_hash, str):
+            chain_hash = ""
+        _save_chain_state(agent_id, seq, chain_hash)
+    except Exception:
+        logger.debug("Failed to persist client state", exc_info=True)
+
+
+def _init_transport() -> Any:
+    """Initialize the read-only transport (blocking, call from thread)."""
+    from aegis.transport import CanisterTransport, TransportConfig
+
+    cfg = _get_config()
+    return CanisterTransport(TransportConfig(
+        canister_id=cfg["canister_id"],
+        network=cfg["network"],
+        private_key_path=cfg.get("private_key_path") or None,
+    ))
+
+
+async def _get_transport() -> Any:
+    """Lazy-init the read-only transport singleton (non-blocking)."""
     global _transport
     if _transport is not None:
         return _transport
 
-    from aegis.transport import CanisterTransport, TransportConfig
-
-    cfg = _get_config()
-    _transport = CanisterTransport(TransportConfig(
-        canister_id=cfg["canister_id"],
-        network=cfg["network"],
-    ))
+    _transport = await asyncio.wait_for(
+        asyncio.to_thread(_init_transport),
+        timeout=_TOOL_TIMEOUT,
+    )
     return _transport
 
 
+async def _run_with_timeout(fn: Any, *args: Any) -> Any:
+    """Run a blocking function in a thread with timeout."""
+    return await asyncio.wait_for(
+        asyncio.to_thread(fn, *args),
+        timeout=_TOOL_TIMEOUT,
+    )
+
+
 # ---------------------------------------------------------------------------
-# Tools (8)
+# Tools (8) — all async to avoid blocking the MCP event loop
 # ---------------------------------------------------------------------------
 
 
 @mcp.tool()
-def aegis_log_tool_call(
+async def aegis_log_tool_call(
     tool: str,
     input_data: str,
     output_data: str,
@@ -189,21 +355,26 @@ def aegis_log_tool_call(
     Returns:
         The action_id assigned by the on-chain ledger.
     """
-    client = _get_client()
-    action_id = client.log_tool_call(
-        tool=tool,
-        input_data=_parse_json(input_data),
-        output_data=_parse_json(output_data),
-        duration_ms=duration_ms,
-        status=status,
-        reasoning=reasoning,
-        confidence=confidence,
-    )
-    return json.dumps({"action_id": action_id})
+    client = await _get_client()
+
+    def _call() -> str:
+        action_id = client.log_tool_call(
+            tool=tool,
+            input_data=_parse_json(input_data),
+            output_data=_parse_json(output_data),
+            duration_ms=duration_ms,
+            status=status,
+            reasoning=reasoning,
+            confidence=confidence,
+        )
+        _persist_client_state()
+        return json.dumps({"action_id": action_id})
+
+    return await _run_with_timeout(_call)
 
 
 @mcp.tool()
-def aegis_log_decision(
+async def aegis_log_decision(
     reasoning: str,
     confidence: float,
     input_data: str = "{}",
@@ -222,19 +393,24 @@ def aegis_log_decision(
     Returns:
         The action_id assigned by the on-chain ledger.
     """
-    client = _get_client()
-    action_id = client.log_decision(
-        reasoning=reasoning,
-        confidence=confidence,
-        input_data=_parse_json(input_data),
-        output_data=_parse_json(output_data),
-        duration_ms=duration_ms,
-    )
-    return json.dumps({"action_id": action_id})
+    client = await _get_client()
+
+    def _call() -> str:
+        action_id = client.log_decision(
+            reasoning=reasoning,
+            confidence=confidence,
+            input_data=_parse_json(input_data),
+            output_data=_parse_json(output_data),
+            duration_ms=duration_ms,
+        )
+        _persist_client_state()
+        return json.dumps({"action_id": action_id})
+
+    return await _run_with_timeout(_call)
 
 
 @mcp.tool()
-def aegis_log_observation(
+async def aegis_log_observation(
     input_data: str,
     output_data: str = "{}",
     duration_ms: int = 0,
@@ -249,17 +425,22 @@ def aegis_log_observation(
     Returns:
         The action_id assigned by the on-chain ledger.
     """
-    client = _get_client()
-    action_id = client.log_observation(
-        input_data=_parse_json(input_data),
-        output_data=_parse_json(output_data),
-        duration_ms=duration_ms,
-    )
-    return json.dumps({"action_id": action_id})
+    client = await _get_client()
+
+    def _call() -> str:
+        action_id = client.log_observation(
+            input_data=_parse_json(input_data),
+            output_data=_parse_json(output_data),
+            duration_ms=duration_ms,
+        )
+        _persist_client_state()
+        return json.dumps({"action_id": action_id})
+
+    return await _run_with_timeout(_call)
 
 
 @mcp.tool()
-def aegis_log_error(
+async def aegis_log_error(
     tool: str,
     input_data: str,
     error: str,
@@ -276,18 +457,23 @@ def aegis_log_error(
     Returns:
         The action_id assigned by the on-chain ledger.
     """
-    client = _get_client()
-    action_id = client.log_error(
-        tool=tool,
-        input_data=_parse_json(input_data),
-        error=error,
-        duration_ms=duration_ms,
-    )
-    return json.dumps({"action_id": action_id})
+    client = await _get_client()
+
+    def _call() -> str:
+        action_id = client.log_error(
+            tool=tool,
+            input_data=_parse_json(input_data),
+            error=error,
+            duration_ms=duration_ms,
+        )
+        _persist_client_state()
+        return json.dumps({"action_id": action_id})
+
+    return await _run_with_timeout(_call)
 
 
 @mcp.tool()
-def aegis_verify_entry(action_id: str) -> str:
+async def aegis_verify_entry(action_id: str) -> str:
     """Verify a ledger entry on-chain via cryptographic hash-chain verification.
 
     Args:
@@ -297,38 +483,46 @@ def aegis_verify_entry(action_id: str) -> str:
         JSON with is_valid, stored_chain_hash, message, previous_chain_hash,
         sequence_number, and action_id.
     """
-    from ic.candid import Types  # type: ignore[import-untyped]
+    transport = await _get_transport()
 
-    transport = _get_transport()
-    raw = transport.call_query(
-        "verifyEntry", [{"type": Types.Text, "value": action_id}]
-    )
-    result = _map_candid_keys(raw, _VERIFY_HASH_MAP)
-    return json.dumps({
-        "is_valid": result.get("isValid", False),
-        "stored_chain_hash": result.get("storedChainHash", ""),
-        "message": result.get("message", ""),
-        "previous_chain_hash": result.get("previousChainHash", ""),
-        "sequence_number": result.get("sequenceNumber", 0),
-        "action_id": action_id,
-    })
+    def _call() -> str:
+        from ic.candid import Types  # type: ignore[import-untyped]
+
+        raw = transport.call_query(
+            "verifyEntry", [{"type": Types.Text, "value": action_id}]
+        )
+        result = _map_candid_keys(raw, _VERIFY_HASH_MAP)
+        return json.dumps({
+            "is_valid": result.get("isValid", False),
+            "stored_chain_hash": result.get("storedChainHash", ""),
+            "message": result.get("message", ""),
+            "previous_chain_hash": result.get("previousChainHash", ""),
+            "sequence_number": result.get("sequenceNumber", 0),
+            "action_id": action_id,
+        })
+
+    return await _run_with_timeout(_call)
 
 
 @mcp.tool()
-def aegis_get_health() -> str:
+async def aegis_get_health() -> str:
     """Get live health info from the Aegis canister on ICP.
 
     Returns:
         JSON with totalEntries, totalKeys, totalOrgs, heapBytes, etc.
     """
-    transport = _get_transport()
-    raw = transport.call_query("getHealth", [])
-    health = _map_candid_keys(raw, _HEALTH_HASH_MAP)
-    return json.dumps(health, default=str)
+    transport = await _get_transport()
+
+    def _call() -> str:
+        raw = transport.call_query("getHealth", [])
+        health = _map_candid_keys(raw, _HEALTH_HASH_MAP)
+        return json.dumps(health, default=str)
+
+    return await _run_with_timeout(_call)
 
 
 @mcp.tool()
-def aegis_generate_report(format: str = "eu-ai-act") -> str:
+async def aegis_generate_report(format: str = "eu-ai-act") -> str:
     """Generate a compliance report from live canister data.
 
     Args:
@@ -337,26 +531,31 @@ def aegis_generate_report(format: str = "eu-ai-act") -> str:
     Returns:
         The generated Markdown compliance report text.
     """
-    from aegis.report import ReportFormat, generate_report
+    def _call() -> str:
+        from aegis.report import ReportFormat, generate_report
 
-    cfg = _get_config()
-    fmt = ReportFormat(format)
-    report = generate_report(canister_id=cfg["canister_id"], format=fmt)
-    return report.markdown
+        cfg = _get_config()
+        fmt = ReportFormat(format)
+        report = generate_report(canister_id=cfg["canister_id"], format=fmt)
+        return report.markdown
+
+    return await _run_with_timeout(_call)
 
 
 @mcp.tool()
-def aegis_new_session(session_id: str = "") -> str:
+async def aegis_new_session(session_id: str = "") -> str:
     """Start a new logging session, resetting the sequence counter.
 
     Args:
-        session_id: Custom session ID. Auto-generated if empty.
+        session_id: Custom session ID. Defaults to agent_id for agent-centric logging.
 
     Returns:
         JSON with the new session_id.
     """
-    client = _get_client()
-    new_id = client.new_session(session_id=session_id or None)
+    client = await _get_client()
+    # Default to agent_id — agent-centric logging, not random sessions
+    effective_id = session_id or client._agent_id
+    new_id = client.new_session(session_id=effective_id)
     return json.dumps({"session_id": new_id})
 
 
@@ -368,8 +567,9 @@ def aegis_new_session(session_id: str = "") -> str:
 @mcp.resource("aegis://health")
 def resource_health() -> str:
     """Live canister health status as JSON."""
-    transport = _get_transport()
-    raw = transport.call_query("getHealth", [])
+    if _transport is None:
+        return json.dumps({"error": "transport not initialized — call a tool first"})
+    raw = _transport.call_query("getHealth", [])
     health = _map_candid_keys(raw, _HEALTH_HASH_MAP)
     return json.dumps(health, default=str)
 
@@ -378,14 +578,13 @@ def resource_health() -> str:
 def resource_session(session_id: str) -> str:
     """Session info for the current client."""
     try:
-        client = _get_client()
         return json.dumps({
-            "session_id": client.session_id,
+            "session_id": _client.session_id if _client else "(not initialized)",
             "requested_session_id": session_id,
-            "sequence_number": client.sequence_number,
-            "pending_spill_count": client.pending_spill_count,
-            "agent_id": client._agent_id,
-            "canister_id": client._canister_id,
+            "sequence_number": _client.sequence_number if _client else 0,
+            "pending_spill_count": _client.pending_spill_count if _client else 0,
+            "agent_id": _client._agent_id if _client else "(not initialized)",
+            "canister_id": _client._canister_id if _client else "(not initialized)",
         })
     except Exception as exc:
         return json.dumps({"error": str(exc), "requested_session_id": session_id})

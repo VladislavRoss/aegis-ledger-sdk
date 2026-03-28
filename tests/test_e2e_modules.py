@@ -125,8 +125,8 @@ class TestCLICommandsE2E:
             main()
 
         assert Path(key_path).exists()
-        # .with_suffix(".pub") replaces .bin → .pub
-        pub_path = Path(key_path).with_suffix(".pub")
+        # Algo-specific pub: <name>.bin.pub (not <name>.pub)
+        pub_path = Path(key_path).parent / (Path(key_path).name + ".pub")
         assert pub_path.exists()
         pub_hex = pub_path.read_text().strip()
         assert len(pub_hex) == 3904  # 1952 bytes * 2
@@ -148,7 +148,7 @@ class TestCLICommandsE2E:
             main()
 
         assert Path(key_path).exists()
-        pub_path = Path(key_path).with_suffix(".pub")
+        pub_path = Path(key_path).parent / (Path(key_path).name + ".pub")
         assert pub_path.exists()
         pub_hex = pub_path.read_text().strip()
         assert len(pub_hex) == 5184  # 2592 bytes * 2
@@ -170,7 +170,7 @@ class TestCLICommandsE2E:
             main()
 
         assert Path(key_path).exists()
-        pub_path = Path(key_path).with_suffix(".pub")
+        pub_path = Path(key_path).parent / (Path(key_path).name + ".pub")
         assert pub_path.exists()
 
     def test_cli_keygen_hybrid(self, tmp_path):
@@ -284,7 +284,7 @@ class TestKeygenFunctionsE2E:
         assert isinstance(sk_bytes, bytes)
         assert len(pub_hex) == 3904
         assert path.exists()
-        assert path.with_suffix(".pub").exists()
+        assert (path.parent / (path.name + ".pub")).exists()
 
     def test_generate_mldsa87_keypair(self, tmp_path):
         """Keygen E2E: generate_mldsa87_keypair erzeugt ML-DSA-87 Keypair."""
@@ -302,7 +302,7 @@ class TestKeygenFunctionsE2E:
         assert len(sk_bytes) == 4896
         assert len(pub_hex) == 5184  # 2592 bytes * 2
         assert path.exists()
-        assert path.with_suffix(".pub").exists()
+        assert (path.parent / (path.name + ".pub")).exists()
 
     def test_generate_slhdsa128s_keypair(self, tmp_path):
         """Keygen E2E: generate_slhdsa128s_keypair erzeugt SLH-DSA-128s Keypair."""
@@ -319,7 +319,7 @@ class TestKeygenFunctionsE2E:
         assert isinstance(sk_bytes, bytes)
         assert len(pub_hex) == 64  # 32 bytes = 64 hex
         assert path.exists()
-        assert path.with_suffix(".pub").exists()
+        assert (path.parent / (path.name + ".pub")).exists()
 
     def test_generate_hybrid_keypair(self, tmp_path):
         """Keygen E2E: generate_hybrid_keypair erzeugt 3 Dateien."""

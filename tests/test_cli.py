@@ -268,13 +268,13 @@ class TestCliInit:
         assert 'agent_id = "ak_' in content
 
     def test_init_algorithm_selection(self, tmp_path):
-        """Init with interactive algorithm choice (choice '1' = ed25519)."""
+        """Init with interactive: key name first, then algorithm choice '1' = ed25519."""
         import os
         cfg_dir = tmp_path / ".aegis"
         env = {**os.environ, "PYTHONUTF8": "1", "AEGIS_CONFIG_DIR": str(cfg_dir)}
         result = subprocess.run(
             [sys.executable, "-m", "AEGIS_LEDGER.cli", "init"],
-            input="1\nak_algo_test\n",
+            input="ak_algo_test\n1\n",
             capture_output=True, text=True, timeout=15, env=env,
         )
         assert result.returncode == 0, result.stdout + result.stderr
