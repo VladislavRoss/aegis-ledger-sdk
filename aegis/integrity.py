@@ -13,6 +13,67 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("aegis")
 
+# ── Candid field-hash maps (ic-py returns hashes, not names) ─────────────
+
+HEALTH_HASH_MAP: dict[str, str] = {
+    "_576569836": "totalEntries",
+    "_1673630680": "totalKeys",
+    "_1718631411": "totalOrgs",
+    "_492408735": "heapBytes",
+    "_3726629775": "cyclesBalance",
+    "_4170640857": "deferredVerifications",
+    "_3342846017": "totalSessions",
+    "_3244729591": "schemaVersion",
+    "_1389760433": "canisterVersion",
+    "_4029786842": "activeKeys",
+}
+
+VERIFY_HASH_MAP: dict[str, str] = {
+    "_3776271665": "actionId",
+    "_3460176050": "isValid",
+    "_1390137228": "storedChainHash",
+    "_2601806392": "previousChainHash",
+    "_3248078826": "sequenceNumber",
+    "_2584819143": "message",
+    "_2213923415": "signatureAlgorithm",
+    "_613449444": "signatureValid",
+    "_735126595": "deferredReason",
+    "_2933681001": "entryTimestampNs",
+}
+
+API_KEY_HASH_MAP: dict[str, str] = {
+    "_3741232986": "keyId",
+    "_891494111": "orgId",
+    "_1613253554": "agentIdPrefix",
+    "_1118656517": "publicKeyHex",
+    "_1240611067": "createdAt",
+    "_3774262195": "lastUsed",
+    "_100394802": "status",
+    "_3567307894": "rateLimitPerSecond",
+    "_351186031": "algorithm",
+    "_478735815": "expiresAt",
+    "_3956820977": "revokedAt",
+    "_1595738364": "description",
+}
+
+SESSION_SUMMARY_HASH_MAP: dict[str, str] = {
+    "_3142408401": "sessionId",
+    "_793140989": "entryCount",
+    "_3430636010": "lastActivityNs",
+    "_146711460": "chainIntact",
+    "_2213923415": "signatureAlgorithm",
+}
+
+SEQUENCE_HEAD_HASH_MAP: dict[str, str] = {
+    "_96741377": "sequenceHead",
+    "_317326703": "chainHash",
+}
+
+
+def map_candid_keys(raw: dict[str, Any], hash_map: dict[str, str]) -> dict[str, Any]:
+    """Map Candid field-hash keys to human-readable names."""
+    return {hash_map.get(str(k), str(k)): v for k, v in raw.items()}
+
 
 def snapshot_path(spill_dir: Path, canister_id: str) -> Path:
     base = spill_dir.parent / "snapshots"
@@ -84,6 +145,11 @@ def verify_integrity(
             else:
                 valid += 1
         except Exception as e:
+            from .transport import CanisterError
+            if isinstance(e, CanisterError) and e.error_code in (
+                "UNAUTHORIZED", "AUTH", "FORBIDDEN",
+            ):
+                raise
             logger.warning("verify_integrity: verifyEntry(%s) failed: %s", aid, e)
             missing.append(aid)
 

@@ -20,9 +20,7 @@ def _prompt(text: str) -> str:
 
 
 def cmd_register_key(args: list[str]) -> None:
-    """Register a new API key via Dashboard (computes PoP, opens browser)."""
-    from urllib.parse import quote
-
+    """Register a new API key directly on canister (headless, no browser)."""
     from aegis.crypto import load_private_key
 
     if not args:
@@ -106,25 +104,50 @@ def cmd_register_key(args: list[str]) -> None:
     except Exception as e:
         print(f"  [WARN] Could not compute PoP: {e}")
 
-    # Open dashboard with pre-filled fields
-    dash_url = (
-        f"https://www.aegis-ledger.com/dashboard"
-        f"?pubkey={quote(pub_hex)}"
-        f"&keyid={quote(key_id)}"
-        f"&prefix={quote(key_id)}"
-        + (f"&pop={quote(pop_sig)}" if pop_sig else "")
-    )
-    print()
-    print("  Opening Dashboard to register key...")
-    print("  Sign in, then click ISSUE KEY.")
+    # Register key directly on canister (headless)
+    from aegis.cli_init import _call_accept_dpa, _call_create_api_key, _derive_principal_from_pem
+
+    pem_path = kf if algorithm == "ed25519" else kf.parent / "agent_key.pem"
+    if not pem_path.exists():
+        print(f"  Error: Transport key not found: {pem_path}")
+        sys.exit(1)
+
     try:
-        import webbrowser
-        webbrowser.open(dash_url)
-        print("  [OK] Browser opened")
+        org_id = _derive_principal_from_pem(pem_path)
+        print(f"  [OK] Principal: {org_id}")
+    except Exception as e:
+        print(f"  [FAIL] Could not derive principal: {e}")
+        sys.exit(1)
+
+    from aegis.transport import CanisterTransport, TransportConfig
+
+    canister = "toqqq-lqaaa-aaaae-afc2a-cai"
+    try:
+        from aegis.config import get_client_config, load_config
+        cfg = load_config()
+        canister = get_client_config(cfg).get("canister_id", canister)
     except Exception:
-        print(f"  Open: {dash_url}")
-    print()
-    print(f"  [OK] Key {key_id} ready to register ({algorithm})")
+        pass
+
+    transport = CanisterTransport(
+        TransportConfig(canister_id=canister, private_key_path=str(pem_path))
+    )
+
+    try:
+        _call_accept_dpa(transport)
+        print("  [OK] DPA accepted")
+        _call_create_api_key(
+            transport, key_id, org_id, key_id, pub_hex,
+            algorithm, pop_sig, "Registered via aegis register-key",
+        )
+        print(f"  [OK] Key {key_id} registered on-chain ({algorithm})")
+    except Exception as e:
+        err = str(e)
+        if "already" in err.lower():
+            print(f"  [OK] Key {key_id} already registered")
+        else:
+            print(f"  [FAIL] Registration failed: {err}")
+            sys.exit(1)
 
 
 def cmd_revoke(args: list[str]) -> None:

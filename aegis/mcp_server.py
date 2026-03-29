@@ -70,14 +70,25 @@ def _map_candid_keys(raw: dict, hash_map: dict[str, str]) -> dict:
 # MCP server instance
 # ---------------------------------------------------------------------------
 
-mcp = FastMCP("aegis-ledger")
+mcp = FastMCP(
+    "aegis-ledger",
+    instructions=(
+        "Aegis Ledger — tamper-evident AI execution logging.\n\n"
+        "IMPORTANT: After EVERY tool call you make, log it with aegis_log_tool_call(). "
+        "This creates a cryptographically signed, hash-chained audit trail on the "
+        "Internet Computer blockchain. Include the tool name, input, output, and "
+        "duration. For decisions, use aegis_log_decision(). For errors, use "
+        "aegis_log_error(). This logging is required for EU AI Act (Art. 12) "
+        "compliance and provides tamper-evident proof of AI agent behavior."
+    ),
+)
 
 # ---------------------------------------------------------------------------
 # Lazy client singleton
 # ---------------------------------------------------------------------------
 
 _client: Any = None
-_transport: Any = None
+_transport: Any = None  # lightweight read-only (no private key)
 
 
 def _load_chain_state(agent_id: str) -> dict[str, Any]:
@@ -147,7 +158,13 @@ def _get_config() -> dict[str, str]:
 
 
 def _init_client() -> Any:
-    """Initialize the AegisClient (blocking, call from thread)."""
+    """Initialize the AegisClient (blocking, call from thread).
+
+    Reuses the global _transport for sequence sync instead of creating
+    a third transport object.
+    """
+    import gc  # noqa: E402
+
     from aegis import AegisClient
 
     cfg = _get_config()
@@ -190,18 +207,18 @@ def _init_client() -> Any:
     if state["chain_hash"]:
         client._chain_heads[agent_id] = state["chain_hash"]
 
-    # Auto-recovery: sync with canister if local state might be stale.
-    # This prevents sequence desync when multiple processes write or
-    # after crashes where chain state wasn't persisted.
+    # Auto-recovery: sync with canister via shared _transport (no extra alloc).
+    global _transport
     try:
-        canister_state = _sync_sequence_from_canister(cfg, agent_id)
+        if _transport is None:
+            _transport = _init_transport()
+        canister_state = _sync_sequence_from_canister(_transport, session_id=agent_id)
         if canister_state is not None:
             canister_seq, canister_hash = canister_state
-            # Canister stores "last used" seq; SDK stores "next to use"
             canister_next = canister_seq + 1
             if canister_next > client._sequence:
                 logger.warning(
-                    "Chain state stale: local=%d canister=%d → syncing",
+                    "Chain state stale: local=%d canister=%d -> syncing",
                     client._sequence, canister_next,
                 )
                 client._sequence = canister_next
@@ -215,25 +232,18 @@ def _init_client() -> Any:
         "MCP client initialized: agent=%s seq=%d",
         agent_id, client._sequence,
     )
+    gc.collect()
     return client
 
 
 def _sync_sequence_from_canister(
-    cfg: dict[str, str], session_id: str,
+    transport: Any, *, session_id: str,
 ) -> tuple[int, str] | None:
     """Query canister for the actual sequence head of a session.
 
-    Uses the public ``getSessionSequenceHead`` endpoint — no auth needed.
-    Returns (last_sequence, chain_hash) or None if unavailable.
-    Works for any agent, any org, at any scale.
+    Uses the provided transport (no extra allocation) and the public
+    ``getSessionSequenceHead`` endpoint — no auth needed.
     """
-    from aegis.transport import CanisterTransport, TransportConfig
-
-    transport = CanisterTransport(TransportConfig(
-        canister_id=cfg["canister_id"],
-        network=cfg["network"],
-    ))
-
     from ic.candid import Types  # type: ignore[import-untyped]
 
     raw = transport.call_query(
@@ -243,15 +253,13 @@ def _sync_sequence_from_canister(
     if not isinstance(raw, dict):
         return None
 
-    # Parse response: {sequenceHead: ?Nat, chainHash: Text}
-    # ic-py returns Candid field hashes as keys
     seq_head = None
     chain_hash = ""
     for _k, v in raw.items():
         if isinstance(v, list) and len(v) == 1 and isinstance(v[0], int):
-            seq_head = v[0]  # ?Nat = [n] when Some
+            seq_head = v[0]
         elif isinstance(v, list) and len(v) == 0:
-            seq_head = None  # ?Nat = [] when None
+            seq_head = None
         elif isinstance(v, str):
             chain_hash = v
 
@@ -294,14 +302,17 @@ def _persist_client_state() -> None:
 
 
 def _init_transport() -> Any:
-    """Initialize the read-only transport (blocking, call from thread)."""
+    """Initialize a lightweight read-only transport (no private key).
+
+    Used for public queries (getHealth, verifyEntry, getSessionSequenceHead).
+    No crypto loaded — keeps memory low until a write is needed.
+    """
     from aegis.transport import CanisterTransport, TransportConfig
 
     cfg = _get_config()
     return CanisterTransport(TransportConfig(
         canister_id=cfg["canister_id"],
         network=cfg["network"],
-        private_key_path=cfg.get("private_key_path") or None,
     ))
 
 
@@ -540,6 +551,71 @@ async def aegis_generate_report(format: str = "eu-ai-act") -> str:
         return report.markdown
 
     return await _run_with_timeout(_call)
+
+
+@mcp.tool()
+async def aegis_flush_queue(max_entries: int = 50) -> str:
+    """Flush the local hook queue to the on-chain ledger in one batch.
+
+    The PostToolUse hook captures tool calls to ~/.aegis/hook_queue.jsonl.
+    This tool reads pending entries, sends them as a single batch call,
+    and truncates the queue. Much cheaper than individual log calls.
+
+    Args:
+        max_entries: Maximum entries to flush per call (default 50).
+
+    Returns:
+        JSON with flushed count and action_ids.
+    """
+    queue_path = Path.home() / ".aegis" / "hook_queue.jsonl"
+    if not queue_path.exists():
+        return json.dumps({"flushed": 0, "message": "Queue empty"})
+
+    lines = queue_path.read_text(encoding="utf-8").strip().splitlines()
+    if not lines:
+        return json.dumps({"flushed": 0, "message": "Queue empty"})
+
+    # Parse up to max_entries
+    entries: list[dict[str, Any]] = []
+    for line in lines[:max_entries]:
+        try:
+            entry = json.loads(line)
+            entries.append({
+                "action_type": "tool_call",
+                "tool": entry.get("tool", "unknown"),
+                "input_data": _parse_json(entry.get("input_data", "{}")),
+                "output_data": _parse_json(entry.get("output_data", "{}")),
+                "status": "success",
+            })
+        except json.JSONDecodeError:
+            continue
+
+    if not entries:
+        return json.dumps({"flushed": 0, "message": "No valid entries"})
+
+    client = await _get_client()
+
+    def _call() -> str:
+        result = client.log_batch(entries)
+        _persist_client_state()
+        return json.dumps({
+            "flushed": len(entries),
+            "action_ids": result if isinstance(result, list) else [],
+            "remaining": max(0, len(lines) - max_entries),
+        })
+
+    response = await _run_with_timeout(_call)
+
+    # Truncate flushed entries from queue (atomic write)
+    remaining_lines = lines[max_entries:]
+    tmp = queue_path.with_suffix(".tmp")
+    tmp.write_text(
+        "\n".join(remaining_lines) + ("\n" if remaining_lines else ""),
+        encoding="utf-8",
+    )
+    tmp.replace(queue_path)
+
+    return response
 
 
 @mcp.tool()

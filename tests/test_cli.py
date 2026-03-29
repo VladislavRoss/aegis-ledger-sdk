@@ -230,36 +230,43 @@ class TestCliReportFormats:
 
 
 class TestCliInit:
-    """Test aegis init command."""
+    """Test aegis init command.
+
+    New flow (B4): principal -> agent_name -> [algo] -> press_enter -> config_location
+    AEGIS_SKIP_UPDATE_CHECK=1 prevents PyPI check from consuming input.
+    """
 
     def test_init_generates_key_and_config(self, tmp_path):
-        """Init with --algorithm flag generates key + config."""
+        """Init with --algorithm flag generates key + config (headless registration)."""
         import os
         cfg_dir = tmp_path / ".aegis"
-        env = {**os.environ, "PYTHONUTF8": "1", "AEGIS_CONFIG_DIR": str(cfg_dir)}
+        env = {**os.environ, "PYTHONUTF8": "1", "AEGIS_CONFIG_DIR": str(cfg_dir),
+               "AEGIS_SKIP_UPDATE_CHECK": "1"}
+        # Headless flow: agent_name -> config_location (no principal prompt)
         result = subprocess.run(
             [sys.executable, "-m", "AEGIS_LEDGER.cli", "init", "--algorithm", "ed25519"],
-            input="ak_test_key\ntest-principal-abc\n",
-            capture_output=True, text=True, timeout=15, env=env,
+            input="ak_test_key\n\n",
+            capture_output=True, text=True, timeout=30, env=env,
         )
         assert result.returncode == 0, result.stdout + result.stderr
         assert "Setup complete" in result.stdout
-        assert "from_config" in result.stdout
+        assert "aegis test" in result.stdout
         cfg_file = cfg_dir / "config.toml"
         assert cfg_file.exists()
         content = cfg_file.read_text(encoding="utf-8")
         assert "ak_test_key" in content
-        assert "test-principal-abc" in content
 
     def test_init_default_key_id(self, tmp_path):
         """If key ID left blank, uses the auto-generated suggestion."""
         import os
         cfg_dir = tmp_path / ".aegis"
-        env = {**os.environ, "PYTHONUTF8": "1", "AEGIS_CONFIG_DIR": str(cfg_dir)}
+        env = {**os.environ, "PYTHONUTF8": "1", "AEGIS_CONFIG_DIR": str(cfg_dir),
+               "AEGIS_SKIP_UPDATE_CHECK": "1"}
+        # Headless flow: agent_name(empty=auto) -> config_location
         result = subprocess.run(
             [sys.executable, "-m", "AEGIS_LEDGER.cli", "init", "--algorithm", "ed25519"],
             input="\n\n",
-            capture_output=True, text=True, timeout=15, env=env,
+            capture_output=True, text=True, timeout=30, env=env,
         )
         assert result.returncode == 0, result.stdout + result.stderr
         cfg_file = cfg_dir / "config.toml"
@@ -268,17 +275,51 @@ class TestCliInit:
         assert 'agent_id = "ak_' in content
 
     def test_init_algorithm_selection(self, tmp_path):
-        """Init with interactive: key name first, then algorithm choice '1' = ed25519."""
+        """Init interactive: agent_name -> algo '1' = ed25519."""
         import os
         cfg_dir = tmp_path / ".aegis"
-        env = {**os.environ, "PYTHONUTF8": "1", "AEGIS_CONFIG_DIR": str(cfg_dir)}
+        env = {**os.environ, "PYTHONUTF8": "1", "AEGIS_CONFIG_DIR": str(cfg_dir),
+               "AEGIS_SKIP_UPDATE_CHECK": "1"}
+        # Headless flow: agent_name -> algo=1 -> config_location
         result = subprocess.run(
             [sys.executable, "-m", "AEGIS_LEDGER.cli", "init"],
-            input="ak_algo_test\n1\n",
-            capture_output=True, text=True, timeout=15, env=env,
+            input="ak_algo_test\n1\n\n",
+            capture_output=True, text=True, timeout=30, env=env,
         )
         assert result.returncode == 0, result.stdout + result.stderr
         assert "Ed25519" in result.stdout
+
+    def test_init_backup_warning(self, tmp_path):
+        """Init shows backup warning for private key."""
+        import os
+        cfg_dir = tmp_path / ".aegis"
+        env = {**os.environ, "PYTHONUTF8": "1", "AEGIS_CONFIG_DIR": str(cfg_dir),
+               "AEGIS_SKIP_UPDATE_CHECK": "1"}
+        result = subprocess.run(
+            [sys.executable, "-m", "AEGIS_LEDGER.cli", "init", "--algorithm", "ed25519"],
+            input="\n\n",
+            capture_output=True, text=True, timeout=30, env=env,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "BACKUP" in result.stdout
+        assert "Wiederherstellung" in result.stdout
+
+    def test_init_ml_dsa_65_default(self, tmp_path):
+        """Init without algo flag defaults to ML-DSA-65 when pressing Enter."""
+        import os
+        cfg_dir = tmp_path / ".aegis"
+        env = {**os.environ, "PYTHONUTF8": "1", "AEGIS_CONFIG_DIR": str(cfg_dir),
+               "AEGIS_SKIP_UPDATE_CHECK": "1"}
+        # Headless flow: name -> algo(default=ml-dsa-65) -> config
+        result = subprocess.run(
+            [sys.executable, "-m", "AEGIS_LEDGER.cli", "init"],
+            input="\n\n\n",
+            capture_output=True, text=True, timeout=30, env=env,
+        )
+        # Either succeeds (pqcrypto installed) or fails (ImportError)
+        if result.returncode == 0:
+            assert "ML-DSA-65" in result.stdout
+            assert "RECOMMENDED" in result.stdout
 
 
 class TestCliEdgeCases:

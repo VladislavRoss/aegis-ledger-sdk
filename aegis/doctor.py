@@ -57,7 +57,7 @@ def run_doctor(canister_id: str | None = None, verbose: bool = False) -> list[di
         try:
             from aegis.transport import CanisterTransport, TransportConfig
 
-            config = TransportConfig(canister_id=cid)
+            config = TransportConfig(canister_id=cid, private_key_path=pk_path_str or None)
             transport = CanisterTransport(config)
             health = transport.call_query("getHealth", [])
             entries = health.get("totalEntries", health.get("_576569836", "?"))

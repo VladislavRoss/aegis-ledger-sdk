@@ -75,7 +75,7 @@ class TestAutoSession:
     """Test that from_config() always provides a session_id."""
 
     def test_auto_session_from_config(self, tmp_path):
-        """from_config() without session_id => auto-generated sess_ prefix."""
+        """from_config() without session_id => uses agent_id (agent-centric)."""
         config_toml = tmp_path / "config.toml"
         config_toml.write_text(
             '[client]\n'
@@ -95,8 +95,7 @@ class TestAutoSession:
             from aegis.client import AegisClient
             client = AegisClient.from_config(config_path=str(config_toml))
             assert client.session_id is not None
-            assert client.session_id.startswith("sess_")
-            assert len(client.session_id) > 5
+            assert client.session_id == "test-agent"
 
     def test_auto_session_explicit_override(self, tmp_path):
         """Explicit session_id overrides auto-generation."""
@@ -135,7 +134,7 @@ class TestAutoSession:
                 private_key_path=str(pk_path),
                 agent_id="test-agent",
             )
-            assert client.session_id.startswith("sess_")
+            assert client.session_id == "test-agent"
 
 
 class TestErrorInheritance:

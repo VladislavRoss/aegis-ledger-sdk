@@ -31,17 +31,15 @@ class TestRegisterKey:
             _run_cli('register-key', 'ak_test', '--key-file', '/nonexistent/key.pem')
 
     def test_register_key_ed25519(self, tmp_path):
-        """Ed25519 key file with PoP computed, browser opened."""
+        """Ed25519 key file with PoP computed, registered headlessly."""
         from aegis.crypto import generate_keypair
         key_path = tmp_path / "agent.pem"
         generate_keypair(str(key_path))
 
-        with patch('webbrowser.open') as wb_open:
+        with patch('aegis.cli_init._derive_principal_from_pem', return_value='test-principal'), \
+             patch('aegis.cli_init._call_accept_dpa', return_value=None), \
+             patch('aegis.cli_init._call_create_api_key', return_value={}):
             _run_cli('register-key', 'ak_test_ed', '--key-file', str(key_path))
-            wb_open.assert_called_once()
-            url = wb_open.call_args[0][0]
-            assert 'keyid=ak_test_ed' in url
-            assert 'pop=' in url
 
     def test_register_key_algo_mismatch(self, tmp_path):
         """PEM file + --algorithm ml-dsa-65 results in error."""
@@ -61,9 +59,10 @@ class TestRegisterKey:
         key_path = tmp_path / "agent.pem"
         generate_keypair(str(key_path))
 
-        with patch('webbrowser.open') as wb_open:
+        with patch('aegis.cli_init._derive_principal_from_pem', return_value='test-principal'), \
+             patch('aegis.cli_init._call_accept_dpa', return_value=None), \
+             patch('aegis.cli_init._call_create_api_key', return_value={}):
             _run_cli('register-key', 'ak_auto', '--key-file', str(key_path))
-            wb_open.assert_called_once()
 
     def test_register_key_pub_missing(self, tmp_path):
         """Key file exists but .pub missing results in error."""

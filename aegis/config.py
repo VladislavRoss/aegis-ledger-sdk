@@ -32,6 +32,22 @@ _CONFIG_DIR = Path(os.environ.get("AEGIS_CONFIG_DIR", "~/.aegis")).expanduser()
 _CONFIG_FILE = _CONFIG_DIR / "config.toml"
 
 
+def _find_project_config() -> Path | None:
+    """Find .aegis/config.toml in the current directory or parents.
+
+    Returns the path if found, None otherwise. Does NOT create it.
+    """
+    cwd = Path.cwd()
+    for parent in [cwd, *cwd.parents]:
+        candidate = parent / ".aegis" / "config.toml"
+        if candidate.is_file():
+            return candidate
+        # Stop at filesystem root or home
+        if parent == Path.home() or parent == parent.parent:
+            break
+    return None
+
+
 def _load_toml(path: Path) -> dict[str, Any]:
     """Load a TOML file, returning {} if missing or unparseable."""
     if not path.is_file():
@@ -129,13 +145,23 @@ def write_config(
     signing_scheme: str = "",
     signing_key_path: str = "",
     config_path: Path | None = None,
+    project_local: bool = False,
 ) -> Path:
-    """Write or update ~/.aegis/config.toml with the given values.
+    """Write or update config.toml with the given values.
 
-    Preserves existing [signing] section if present.
+    If ``project_local`` is True, writes to ``.aegis/config.toml`` in the
+    current working directory (creates ``.aegis/`` if needed).
+    Otherwise writes to ``~/.aegis/config.toml`` (global).
+
+    Preserves existing values not overwritten.
     Returns the path to the written config file.
     """
-    path = config_path or _CONFIG_FILE
+    if config_path:
+        path = config_path
+    elif project_local:
+        path = Path.cwd() / ".aegis" / "config.toml"
+    else:
+        path = _CONFIG_FILE
     path.parent.mkdir(parents=True, exist_ok=True)
 
     existing = _load_toml(path)

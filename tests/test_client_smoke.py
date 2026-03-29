@@ -219,8 +219,8 @@ def test_sequence_counter_thread_safe():
 # ---------------------------------------------------------------------------
 
 
-def test_session_id_none_generates_uuid():
-    """Wenn session_id=None, muss ein 'sess_'-Prefix generiert werden."""
+def test_session_id_none_uses_agent_id():
+    """Wenn session_id=None, wird agent_id als session_id verwendet (agent-zentrisch)."""
     with (
         patch("aegis.client.load_private_key", return_value=Ed25519PrivateKey.generate()),
         patch("aegis.client.CanisterTransport") as MockTransport,
@@ -241,8 +241,7 @@ def test_session_id_none_generates_uuid():
             session_id=None,
             environment=Environment(framework="test"),
         )
-        assert client._session_id.startswith("sess_")
-        assert len(client._session_id) > len("sess_")
+        assert client._session_id == "test-agent"
 
 
 def test_metadata_rejects_non_string_values():

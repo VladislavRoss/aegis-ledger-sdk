@@ -14,36 +14,9 @@ from __future__ import annotations
 
 import sys
 
-# ---------------------------------------------------------------------------
-# Candid hash-key mapping (ic-py returns field hashes, not names)
-# ---------------------------------------------------------------------------
-
-_HEALTH_HASH_MAP: dict[str, str] = {
-    "_576569836": "totalEntries",
-    "_1673630680": "totalKeys",
-    "_1718631411": "totalOrgs",
-    "_492408735": "heapBytes",
-    "_3726629775": "cyclesBalance",
-    "_4170640857": "deferredVerifications",
-}
-
-_VERIFY_HASH_MAP: dict[str, str] = {
-    "_3776271665": "actionId",
-    "_3460176050": "isValid",
-    "_1390137228": "storedChainHash",
-    "_2601806392": "previousChainHash",
-    "_3248078826": "sequenceNumber",
-    "_2584819143": "message",
-}
-
-
-def _map_candid_keys(raw: dict, hash_map: dict[str, str]) -> dict:
-    """Map Candid field-hash keys to human-readable names."""
-    mapped: dict = {}
-    for k, v in raw.items():
-        name = hash_map.get(str(k), str(k))
-        mapped[name] = v
-    return mapped
+from aegis.integrity import HEALTH_HASH_MAP as _HEALTH_HASH_MAP
+from aegis.integrity import VERIFY_HASH_MAP as _VERIFY_HASH_MAP
+from aegis.integrity import map_candid_keys as _map_candid_keys
 
 
 def _transport_from_config(canister_id: str | None = None):
@@ -66,7 +39,6 @@ def _transport_from_config(canister_id: str | None = None):
     config = TransportConfig(canister_id=cid, private_key_path=pk_path)
     return CanisterTransport(config), cid
 
-
 def main() -> None:
     """Entry point for the `aegis` CLI command."""
     args = sys.argv[1:]
@@ -78,7 +50,8 @@ def main() -> None:
     command = args[0]
 
     if command == "init":
-        _cmd_init(args[1:])
+        from aegis.cli_init import cmd_init
+        cmd_init(args[1:])
     elif command == "test":
         _cmd_test(args[1:])
     elif command == "keygen":
@@ -105,6 +78,18 @@ def main() -> None:
     elif command == "revoke":
         from aegis.cli_keys import cmd_revoke
         cmd_revoke(args[1:])
+    elif command == "reactivate-key":
+        from aegis.cli_selfservice import cmd_reactivate_key
+        cmd_reactivate_key(args[1:])
+    elif command == "delete-key":
+        from aegis.cli_selfservice import cmd_delete_key
+        cmd_delete_key(args[1:])
+    elif command == "update-key-desc":
+        from aegis.cli_selfservice import cmd_update_key_desc
+        cmd_update_key_desc(args[1:])
+    elif command == "purge-session":
+        from aegis.cli_selfservice import cmd_purge_session
+        cmd_purge_session(args[1:])
     elif command == "version":
         from aegis import __version__
 
@@ -113,7 +98,6 @@ def main() -> None:
         print(f"Unknown command: {command}")
         _print_help()
         sys.exit(1)
-
 
 def _print_help() -> None:
     print(
@@ -134,14 +118,18 @@ Commands:
   doctor                            Check SDK health (config, keys, canister)
   register-key <id> --key-file <f>  Register a new API key via Dashboard
   revoke <key_id>                   Revoke an API key (confirmation required)
+  reactivate-key <key_id>           Reactivate a revoked key (owner only)
+  delete-key <key_id>               Permanently delete a revoked key
+  update-key-desc <id> <desc>       Update key description (max 256 chars)
+  purge-session <sid> [--batch-limit N]  Purge session entries (owner/admin)
   version                           Print SDK version
 
-Algorithms (keygen):
-  ed25519       Ed25519 (default, classical)
-  ml-dsa-65     ML-DSA-65 / FIPS 204 (post-quantum, requires pqcrypto)
-  ml-dsa-87     ML-DSA-87 / FIPS 204 CNSA 2.0 Level 5 (requires pqcrypto)
-  slh-dsa-128s  SLH-DSA-SHAKE-128s / FIPS 205 (hash-based PQ fallback)
-  hybrid        Ed25519 + ML-DSA-65 combined (requires pqcrypto)
+Algorithms (keygen/init):
+  ed25519       Ed25519 (classical)
+  ml-dsa-65     ML-DSA-65 / FIPS 204 (post-quantum, RECOMMENDED)
+  ml-dsa-87     ML-DSA-87 / FIPS 204 CNSA 2.0 Level 5
+  slh-dsa-128s  SLH-DSA-SHAKE-128s / FIPS 205 (EXPERIMENTAL)
+  hybrid        Ed25519 + ML-DSA-65 combined
 
 Report Formats:
   eu-ai-act   EU AI Act Article 12 (default)
@@ -150,316 +138,13 @@ Report Formats:
   all         Generate all formats
 
 Examples:
+  aegis init
   aegis keygen ./keys/my_agent.pem
   aegis keygen ./keys/my_agent.mldsa65 --algorithm ml-dsa-65
-  aegis keygen ./keys/my_agent.mldsa87 --algorithm ml-dsa-87
-  aegis keygen ./keys/my_agent.slh --algorithm slh-dsa-128s
-  aegis keygen ./keys/my_agent --algorithm hybrid
   aegis verify toqqq-lqaaa-aaaae-afc2a-cai act_a7f3b2c19e4d
   aegis report toqqq-lqaaa-aaaae-afc2a-cai --format eu-ai-act
-  aegis report toqqq-lqaaa-aaaae-afc2a-cai --format all -o ./reports/
         """.strip()
     )
-
-
-def _cmd_init(args: list[str]) -> None:
-    """Interactive setup wizard: keygen + config + dashboard link."""
-    import secrets
-    from urllib.parse import quote
-
-    from aegis.config import _CONFIG_DIR, write_config
-
-    quickstart = "--quickstart" in args
-    canister = "toqqq-lqaaa-aaaae-afc2a-cai"
-    dash_base = "https://www.aegis-ledger.com/dashboard"
-    algo_names = {
-        "ed25519": "Ed25519 (classical, default)",
-        "ml-dsa-65": "ML-DSA-65 (FIPS 204, post-quantum)",
-        "ml-dsa-87": "ML-DSA-87 (FIPS 204, CNSA 2.0 Level 5)",
-        "slh-dsa-128s": "SLH-DSA-128s (FIPS 205, hash-based PQ)",
-        "hybrid": "Hybrid (Ed25519 + ML-DSA-65)",
-    }
-
-    # Parse --algorithm flag
-    algorithm = "ed25519"
-    if "--algorithm" in args:
-        idx = args.index("--algorithm")
-        if idx + 1 < len(args):
-            algorithm = args[idx + 1]
-            if algorithm not in algo_names:
-                print(f"Error: Unknown algorithm '{algorithm}'.")
-                print(f"Available: {', '.join(algo_names)}")
-                sys.exit(1)
-
-    print()
-    print("=== Aegis SDK Setup ===")
-    if quickstart:
-        print("  (quickstart mode — using defaults, no prompts)")
-    print()
-
-    # --- Step 1: Key name ---
-    suggested_id = "ak_" + secrets.token_hex(3)
-    if quickstart:
-        api_key_id = suggested_id
-    else:
-        print("Step 1/3: Name your key")
-        print()
-        api_key_id = _prompt(f"  Key name [{suggested_id}]: ").strip()
-        if not api_key_id:
-            api_key_id = suggested_id
-        print()
-
-    # --- Step 2: Algorithm selection (interactive if not passed via flag) ---
-    if not quickstart and "--algorithm" not in args:
-        print("Step 2/3: Security level")
-        print()
-        print("  [1] Standard         — Ed25519, fast & proven (default)")
-        print("  [2] Post-Quantum     — ML-DSA-65, future-proof (FIPS 204)")
-        print("  [3] Maximum          — ML-DSA-87, highest security (CNSA 2.0)")
-        print("  [4] Hash-based PQ    — SLH-DSA-128s, conservative fallback")
-        print("  [5] Hybrid           — Ed25519 + ML-DSA-65 combined")
-        print()
-        choice = _prompt("  Choice [1]: ").strip()
-        algo_map = {"": "ed25519", "1": "ed25519", "2": "ml-dsa-65", "3": "ml-dsa-87",
-                     "4": "slh-dsa-128s", "5": "hybrid"}
-        algorithm = algo_map.get(choice, "")
-        if not algorithm:
-            print(f"  Error: Invalid choice '{choice}'.")
-            sys.exit(1)
-    print(f"  [OK] {algo_names[algorithm]}")
-    print()
-
-    # --- Key generation ---
-    key_dir = _CONFIG_DIR / "keys"
-    key_dir.mkdir(parents=True, exist_ok=True)
-    signing_key_path = ""
-
-    if algorithm == "ed25519":
-        key_path = key_dir / "agent_key.pem"
-        if key_path.exists():
-            print(f"  [OK] Key already exists: {key_path}")
-            from aegis.crypto import get_public_key_hex, load_private_key
-            pub_hex = get_public_key_hex(load_private_key(str(key_path)))
-        else:
-            print("  Generating Ed25519 keypair...")
-            from aegis.crypto import generate_keypair
-            try:
-                _, pub_hex = generate_keypair(str(key_path))
-            except FileExistsError:
-                from aegis.crypto import get_public_key_hex, load_private_key
-                pub_hex = get_public_key_hex(load_private_key(str(key_path)))
-            print(f"  [OK] Private key: {key_path}")
-    elif algorithm == "hybrid":
-        base_path = key_dir / "agent_key"
-        key_path = base_path.with_suffix(".pem")
-        pub_path = base_path.with_suffix(".hybrid.pub")
-        sk_path = base_path.with_suffix(".mldsa65")
-        ml_pub_path = sk_path.parent / (sk_path.name + ".pub")
-        if key_path.exists() and sk_path.exists():
-            print(f"  [OK] Keys already exist: {key_path}")
-            if pub_path.exists():
-                pub_hex = pub_path.read_text(encoding="utf-8").strip()
-            elif ml_pub_path.exists():
-                from aegis.crypto import get_public_key_hex, load_private_key
-                ed_pub = get_public_key_hex(load_private_key(str(key_path)))
-                ml_pub = ml_pub_path.read_text(encoding="utf-8").strip()
-                pub_hex = ed_pub + ml_pub
-                pub_path.write_text(pub_hex + "\n")
-            else:
-                pub_hex = "???"
-        else:
-            print("  Generating Hybrid (Ed25519 + ML-DSA-65) keypair...")
-            from aegis.crypto import generate_hybrid_keypair
-            try:
-                _, _, pub_hex = generate_hybrid_keypair(str(base_path))
-            except (FileExistsError, ImportError) as e:
-                print(f"  Error: {e}")
-                sys.exit(1)
-            print(f"  [OK] Ed25519 key: {key_path}")
-            print(f"  [OK] ML-DSA-65 key: {sk_path}")
-        signing_key_path = str(sk_path)
-    elif algorithm in ("ml-dsa-65", "ml-dsa-87", "slh-dsa-128s"):
-        ext = {"ml-dsa-65": ".mldsa65", "ml-dsa-87": ".mldsa87", "slh-dsa-128s": ".slh"}[algorithm]
-        key_path = key_dir / ("agent_key" + ext)
-        # Algo-specific pub file: agent_key.mldsa65.pub (not agent_key.pub)
-        pub_path = key_path.parent / (key_path.name + ".pub")
-        # PQ algorithms still need a PEM for IC transport
-        pem_path = key_dir / "agent_key.pem"
-        if not pem_path.exists():
-            print("  Generating Ed25519 transport key...")
-            from aegis.crypto import generate_keypair
-            generate_keypair(str(pem_path))
-            print(f"  [OK] Transport key: {pem_path}")
-        if key_path.exists():
-            print(f"  [OK] PQ key already exists: {key_path}")
-            pub_hex = pub_path.read_text(encoding="utf-8").strip() if pub_path.exists() else "???"
-        else:
-            gen_fn_name = {"ml-dsa-65": "generate_mldsa65_keypair",
-                           "ml-dsa-87": "generate_mldsa87_keypair",
-                           "slh-dsa-128s": "generate_slhdsa128s_keypair"}[algorithm]
-            print(f"  Generating {algorithm} keypair...")
-            import aegis.crypto as _crypto
-            try:
-                gen_fn = getattr(_crypto, gen_fn_name)
-                _, pub_hex = gen_fn(str(key_path))
-            except (FileExistsError, ImportError) as e:
-                print(f"  Error: {e}")
-                sys.exit(1)
-            print(f"  [OK] PQ key: {key_path}")
-        key_path = pem_path  # config.toml stores the PEM path for IC transport
-        signing_key_path = str(key_dir / ("agent_key" + ext))
-    else:
-        print(f"  Error: Unhandled algorithm '{algorithm}'.")
-        sys.exit(1)
-
-    if len(pub_hex) <= 64:
-        print(f"  [OK] Public key: {pub_hex}")
-    else:
-        print(f"  [OK] Public key: {pub_hex[:32]}...{pub_hex[-8:]} ({len(pub_hex)} hex)")
-    print()
-
-    # --- Step 3: Register key in Dashboard ---
-    # Compute PoP
-    pop_sig = _compute_pop(algorithm, api_key_id, key_path, signing_key_path)
-
-    # Open Dashboard with all fields pre-filled via URL hash fragment.
-    # Hash fragments are client-side only — no Nginx URI length limit.
-    # Works for Ed25519 (64 hex) AND PQ keys (3904+ hex).
-    dash_url = (
-        f"{dash_base}"
-        f"#pubkey={quote(pub_hex)}"
-        f"&keyid={quote(api_key_id)}"
-        f"&prefix=Global"
-        + (f"&pop={quote(pop_sig)}" if pop_sig else "")
-    )
-
-    if quickstart:
-        org_id = ""
-        print(f"  [OK] Key ID: {api_key_id}")
-        print("  [WARN] Set org_id in ~/.aegis/config.toml after Dashboard login.")
-    else:
-        print("Step 3/3: Activate in Dashboard")
-        print()
-        try:
-            import webbrowser
-            webbrowser.open(dash_url)
-            print("  [OK] Browser opened — everything is pre-filled.")
-        except Exception:
-            print(f"  Open: {dash_url}")
-        print()
-        print('  Sign in and click "ISSUE KEY". That\'s it.')
-        print()
-        print("  Your Principal is shown top-right in the Dashboard (after login).")
-        org_id = _prompt("  Paste your Principal here: ").strip()
-        if not org_id:
-            print(
-                "  [WARN] No Principal — will be derived from PEM"
-                " (may differ from your login)."
-            )
-
-    print()
-
-    # --- Write config ---
-    print("Saving config...")
-    cfg_path = write_config(
-        canister_id=canister,
-        api_key_id=api_key_id,
-        agent_id=api_key_id,
-        private_key_path=str(key_path),
-        org_id=org_id,
-        signing_scheme=algorithm if algorithm != "ed25519" else "",
-        signing_key_path=signing_key_path,
-    )
-    print(f"  [OK] Config saved: {cfg_path}")
-    print()
-
-    print("  from aegis import AegisClient")
-    print("  client = AegisClient.from_config()")
-    print()
-
-    # --- Auto-test ---
-    print("  Testing connection...")
-    try:
-        from aegis.transport import CanisterTransport, TransportConfig
-
-        config = TransportConfig(canister_id=canister, private_key_path=str(key_path))
-        transport = CanisterTransport(config)
-        health = transport.call_query("getHealth", [])
-        entries = health.get("totalEntries", "?")
-        print(f"  [OK] Canister online — {entries} entries on-chain")
-    except Exception as e:
-        print(f"  [WARN] Could not reach canister: {e}")
-        print("  (The SDK works offline with spill-to-disk)")
-
-    print()
-    print("=== Setup complete ===")
-    print()
-    print("Next steps:")
-    print("  1. Test:   python -m aegis test")
-    print("  2. Status: python -m aegis doctor")
-    print("  Docs: https://www.aegis-ledger.com/docs")
-
-
-def _prompt(text: str) -> str:
-    """Read a line from stdin, handling EOF gracefully."""
-    try:
-        return input(text)
-    except (EOFError, KeyboardInterrupt):
-        print()
-        sys.exit(0)
-
-
-def _compute_pop(algorithm: str, key_id: str, key_path, signing_key_path: str) -> str:
-    """Compute Proof of Possession signature for the given key ID."""
-    from pathlib import Path
-
-    pop_msg = f"aegis-pop:{key_id}".encode()
-    try:
-        if algorithm == "ed25519":
-            from aegis.crypto import load_private_key, sign_payload
-            sk = load_private_key(key_path)
-            pop_sig = sign_payload(pop_msg, sk)
-        elif algorithm == "hybrid":
-            from aegis.crypto import load_private_key
-            from aegis.schemes import create_scheme
-            ed_sk = load_private_key(key_path)
-            ml_sk_bytes = Path(signing_key_path).read_bytes()
-            scheme = create_scheme("hybrid", (ed_sk, ml_sk_bytes))
-            pop_sig = scheme.sign(pop_msg)
-        else:
-            from aegis.schemes import create_scheme
-            sk_bytes = Path(signing_key_path).read_bytes()
-            scheme = create_scheme(algorithm, sk_bytes)
-            pop_sig = scheme.sign(pop_msg)
-        print(f"  [OK] Proof of Possession computed for {key_id}")
-        return pop_sig
-    except Exception as e:
-        print(f"  [WARN] Could not compute PoP: {e}")
-        return ""
-
-
-def _try_clipboard_copy(text: str, label: str = "Text") -> None:
-    """Try to copy text to clipboard. Silent on failure."""
-    try:
-        import subprocess
-        if sys.platform == "win32":
-            subprocess.run(
-                ["clip"], input=text.encode("utf-8"), check=True,
-                creationflags=subprocess.CREATE_NO_WINDOW,
-            )
-            print(f"  [OK] {label} copied to clipboard")
-        elif sys.platform == "darwin":
-            subprocess.run(["pbcopy"], input=text.encode("utf-8"), check=True)
-            print(f"  [OK] {label} copied to clipboard")
-        else:
-            subprocess.run(
-                ["xclip", "-selection", "clipboard"],
-                input=text.encode("utf-8"), check=True,
-            )
-            print(f"  [OK] {label} copied to clipboard")
-    except Exception:
-        print("  [INFO] Copy manually — clipboard not available")
-
 
 def _cmd_test(args: list[str]) -> None:
     """Send a real test entry via from_config() and verify it on-chain."""
@@ -519,7 +204,6 @@ def _cmd_test(args: list[str]) -> None:
     print(f"  Entry {action_id} is verified on-chain.")
     print("  View in dashboard: https://www.aegis-ledger.com/dashboard")
     print("  List all sessions: aegis list-sessions")
-
 
 def _cmd_keygen(args: list[str]) -> None:
     """Generate a keypair (Ed25519, ML-DSA-65, or Hybrid)."""
@@ -599,7 +283,6 @@ def _cmd_keygen(args: list[str]) -> None:
     print("  2. Use the key path(s) in your AegisClient config")
     print(f"  3. NEVER commit {path}* to version control")
 
-
 def _cmd_verify(args: list[str]) -> None:
     """Verify a ledger entry via on-chain verifyEntry query."""
     if len(args) < 1:
@@ -640,7 +323,6 @@ def _cmd_verify(args: list[str]) -> None:
     except Exception as e:
         print(f"Error: {e}")
         sys.exit(1)
-
 
 def _cmd_verify_chain(args: list[str]) -> None:
     """Verify full session hash-chain offline via replay."""
@@ -693,7 +375,6 @@ def _cmd_verify_chain(args: list[str]) -> None:
         print(f"Error: {e}")
         sys.exit(1)
 
-
 def _cmd_status(args: list[str]) -> None:
     """Check canister health via on-chain getHealth query."""
     canister_id_arg = args[0] if args else None
@@ -724,7 +405,6 @@ def _cmd_status(args: list[str]) -> None:
     except Exception as e:
         print(f"Error: {e}")
         sys.exit(1)
-
 
 def _cmd_report(args: list[str]) -> None:
     """Generate compliance report."""
@@ -793,7 +473,6 @@ def _cmd_report(args: list[str]) -> None:
     except Exception as e:
         print(f"Error: {e}")
         sys.exit(1)
-
 
 def _cmd_migrate(args: list[str]) -> None:
     """Re-sign entries from a canister session with a new algorithm."""
@@ -865,12 +544,10 @@ Examples:
         print(f"Error: {e}")
         sys.exit(1)
 
-
 _LIST_SESSIONS_HASH_MAP: dict[str, str] = {
     "_3457905975": "sessionId",
     "_576569836": "entryCount",
 }
-
 
 def _cmd_spill_status() -> None:
     """Show pending spill entries (offline buffer)."""
@@ -908,18 +585,13 @@ def _cmd_spill_status() -> None:
                 continue
 
     if total_entries == 0:
-        print("No pending entries. All synced.")
-        return
-
-    print(f"Pending spill entries: {total_entries}")
-    print(f"  Files:   {len(jsonl_files)}")
-    print(f"  Size:    {total_bytes / 1024:.1f} KB")
+        return print("No pending entries. All synced.")
+    kb = total_bytes / 1024
+    print(f"Pending spill entries: {total_entries} ({len(jsonl_files)} files, {kb:.1f} KB)")
     if oldest_ts:
         age = datetime.now(timezone.utc) - datetime.fromtimestamp(oldest_ts / 1000, tz=timezone.utc)
         print(f"  Oldest:  {age.days}d {age.seconds // 3600}h ago")
-    print()
-    print("Run 'aegis test' to retry flushing, or check your network connection.")
-
+    print("  Run 'aegis test' to retry flushing.")
 
 def _cmd_list_sessions(args: list[str]) -> None:
     """List sessions via listMySessions canister query."""
@@ -952,7 +624,6 @@ def _cmd_list_sessions(args: list[str]) -> None:
         print(f"Error: {e}")
         sys.exit(1)
 
-
 def _cmd_doctor(args: list[str]) -> None:
     """Run SDK health diagnostics."""
     from aegis.doctor import doctor_main
@@ -960,7 +631,6 @@ def _cmd_doctor(args: list[str]) -> None:
     canister_id = args[0] if args else None
     code = doctor_main(canister_id=canister_id)
     sys.exit(code)
-
 
 if __name__ == "__main__":
     main()

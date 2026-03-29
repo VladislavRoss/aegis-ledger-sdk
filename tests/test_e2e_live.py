@@ -50,8 +50,8 @@ class TestClientSetup:
     def test_canister_id(self, client):
         assert client._canister_id == "toqqq-lqaaa-aaaae-afc2a-cai"
 
-    def test_session_id_generated(self, client):
-        assert client.session_id.startswith("sess_")
+    def test_session_id_is_agent_id(self, client):
+        assert client.session_id == client._agent_id
         print(f"\n  session_id: {client.session_id}")
 
 
@@ -213,7 +213,7 @@ class TestSessionManagement:
         old_session = client.session_id
         client.new_session()
         assert client.session_id != old_session
-        assert client.session_id.startswith("sess_")
+        assert client._agent_id in client.session_id
         print(f"\n  new session: {client.session_id}")
 
     def test_custom_session_id(self, client):

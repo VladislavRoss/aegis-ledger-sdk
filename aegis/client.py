@@ -64,7 +64,6 @@ logger = logging.getLogger("aegis")
 
 F = TypeVar("F", bound=Callable[..., Any])
 
-
 class AegisClient:
     """
     Client for logging AI agent actions to the Aegis Ledger.
@@ -143,93 +142,100 @@ class AegisClient:
                     raise TypeError(
                         f"metadata values must be str, got {type(v).__name__} for key {k!r}"
                     )
-
         self._canister_id = canister_id
         self._api_key_id = api_key_id
         self._agent_id = agent_id
         self._org_id = org_id
-        self._session_id = session_id or f"sess_{uuid.uuid4().hex[:16]}"
+        self._session_id = session_id or agent_id or f"agent_{uuid.uuid4().hex[:8]}"
         self._sequence: int = 0
         self._lock = threading.Lock()
         self._fail_open = fail_open
         self._redact_pii = redact_pii
         self._default_metadata = metadata or {}
-
         # Resolve signature_scheme from config if not explicit
         if signature_scheme is None:
             _cfg = load_config()
             signature_scheme = get_default_scheme(_cfg)
-            # Only read signing_key_path from config if the scheme needs it
             if signing_key_path is None and signature_scheme in (
                 "hybrid", "ml-dsa-65", "ml-dsa-87", "slh-dsa-128s",
             ):
                 signing_key_path = get_signing_key_path(_cfg)
-
         # Always load Ed25519 PEM for ICP transport + org_id derivation
         self._private_key = load_private_key(private_key_path)
-
-        # Load the signing scheme (Ed25519 default, ML-DSA-65/SLH-DSA/Hybrid from signing_key_path)
+        # Load the signing scheme
         if signature_scheme == "hybrid":
             if signing_key_path is None:
-                raise ValueError(
-                    "signing_key_path is required when signature_scheme='hybrid'"
-                )
+                raise ValueError("signing_key_path is required when signature_scheme='hybrid'")
             sk_bytes = load_mldsa65_private_key(signing_key_path)
-            self._scheme = create_scheme(
-                signature_scheme, (self._private_key, sk_bytes)
-            )
+            self._scheme = create_scheme(signature_scheme, (self._private_key, sk_bytes))
         elif signature_scheme == "ml-dsa-65":
             if signing_key_path is None:
-                raise ValueError(
-                    "signing_key_path is required when signature_scheme='ml-dsa-65'"
-                )
+                raise ValueError("signing_key_path is required when signature_scheme='ml-dsa-65'")
             sk_bytes = load_mldsa65_private_key(signing_key_path)
             self._scheme = create_scheme(signature_scheme, sk_bytes)
         elif signature_scheme == "ml-dsa-87":
             if signing_key_path is None:
-                raise ValueError(
-                    "signing_key_path is required when signature_scheme='ml-dsa-87'"
-                )
+                raise ValueError("signing_key_path is required when signature_scheme='ml-dsa-87'")
             from aegis.crypto import load_mldsa87_private_key
             sk_bytes = load_mldsa87_private_key(signing_key_path)
             self._scheme = create_scheme(signature_scheme, sk_bytes)
         elif signature_scheme == "slh-dsa-128s":
             if signing_key_path is None:
                 raise ValueError(
-                    "signing_key_path is required when signature_scheme='slh-dsa-128s'"
+                    "signing_key_path required for slh-dsa-128s"
                 )
             sk_bytes = load_slhdsa128s_private_key(signing_key_path)
             self._scheme = create_scheme(signature_scheme, sk_bytes)
         else:
             self._scheme = create_scheme(signature_scheme, self._private_key)
-
         # Auto-detect environment if not provided
         self._environment = environment or self._detect_environment()
-
-        # Initialize transport — pass PEM key so IC identity matches org_id
+        # Initialize transport
         transport_config = TransportConfig(
-            canister_id=canister_id,
-            network=network,
-            private_key_path=private_key_path,
+            canister_id=canister_id, network=network, private_key_path=private_key_path,
         )
         self._transport = CanisterTransport(transport_config)
-
         # Auto-derive org_id from loaded key if caller left the default "aaaaa-aa"
         if self._org_id == "aaaaa-aa":
             self._org_id = self._derive_org_id()
-
-        # Action ID stack for parent-child tracking
-        self._action_stack: list[str] = []
-
-        # SHA-256 Hash-Chain state: session_id → last chainHash
-        self._chain_heads: dict[str, str] = {}
-
+        self._action_stack: list[str] = []  # parent-child tracking
+        self._chain_heads: dict[str, str] = {}  # session_id → last chainHash
+        # Agent-centric: sync sequence from canister if reusing existing session
+        self._sync_sequence_from_canister()
         logger.info(
-            "Aegis client initialized: agent=%s session=%s canister=%s",
+            "Aegis client initialized: agent=%s session=%s canister=%s seq=%d",
             self._agent_id,
             self._session_id,
             self._canister_id,
+            self._sequence,
         )
+
+    def _sync_sequence_from_canister(self) -> None:
+        """Query canister for latest sequence head — agent-centric session reuse."""
+        try:
+            from ic.candid import Types
+            raw = self._transport.call_query(
+                "getSessionSequenceHead",
+                [{"type": Types.Text, "value": self._session_id}],
+            )
+            if not isinstance(raw, dict):
+                return
+            seq_head = raw.get("sequenceHead")
+            chain_hash = raw.get("chainHash")
+            if seq_head is None and chain_hash is None:
+                for v in raw.values():
+                    if isinstance(v, list) and v and isinstance(v[0], (int, float)):
+                        seq_head = v[0]
+                    elif isinstance(v, str) and len(v) == 64:
+                        chain_hash = v
+            if isinstance(seq_head, list) and seq_head:
+                seq_head = seq_head[0]
+            if isinstance(seq_head, (int, float)) and int(seq_head) > 0:
+                self._sequence = int(seq_head) + 1
+            if isinstance(chain_hash, str) and chain_hash:
+                self._chain_heads[self._session_id] = chain_hash
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------
     # Factory: zero-config construction from ~/.aegis/config.toml
@@ -579,7 +585,8 @@ class AegisClient:
         """
         with self._lock:
             old_session_id = self._session_id
-            self._session_id = session_id or f"sess_{uuid.uuid4().hex[:16]}"
+            prefix = self._agent_id or "agent"
+            self._session_id = session_id or f"{prefix}_{uuid.uuid4().hex[:8]}"
             self._sequence = 0
             self._action_stack.clear()
             # Clean up chain state from the OLD session
@@ -650,6 +657,45 @@ class AegisClient:
             )
             results.append(action_id)
         return results
+
+    # ------------------------------------------------------------------
+    # PUBLIC API: Self-service key & session management
+    # ------------------------------------------------------------------
+
+    def _api_key_map(self, raw: object) -> dict:
+        from .integrity import API_KEY_HASH_MAP, map_candid_keys
+        return map_candid_keys(raw, API_KEY_HASH_MAP) if isinstance(raw, dict) else raw
+    def reactivate_api_key(self, key_id: str) -> dict:
+        """Reactivate a revoked API key. Owner only."""
+        from ic.candid import Types
+        raw = self._transport.call_update(
+            "reactivateApiKey", [{"type": Types.Text, "value": key_id}])
+        return self._api_key_map(raw)
+
+    def delete_api_key(self, key_id: str) -> None:
+        """Permanently delete a revoked API key. Owner only."""
+        from ic.candid import Types
+        self._transport.call_update("deleteApiKey", [{"type": Types.Text, "value": key_id}])
+
+    def update_api_key_description(self, key_id: str, description: str) -> dict:
+        """Update the description of an API key. Owner only, max 256 chars."""
+        from ic.candid import Types
+        raw = self._transport.call_update(
+            "updateApiKeyDescription",
+            [{"type": Types.Text, "value": key_id}, {"type": Types.Text, "value": description}],
+        )
+        return self._api_key_map(raw)
+
+    def purge_session(self, session_id: str, batch_limit: int | None = None) -> int:
+        """Purge all entries from a session. Owner + Admin."""
+        from ic.candid import Types
+        args = [{"type": Types.Text, "value": session_id}]
+        if batch_limit is not None:
+            args.append({"type": Types.Opt(Types.Nat), "value": [batch_limit]})
+        else:
+            args.append({"type": Types.Opt(Types.Nat), "value": []})
+        result = self._transport.call_update("purgeSession", args)
+        return int(result) if result is not None else 0
 
     def close(self) -> None:
         """Drain spill buffer and release resources."""
@@ -835,15 +881,27 @@ class AegisClient:
                 )
 
             except Exception as e:
+                # Auto-recovery: re-sync sequence on conflict and retry once
+                if "Sequence number must be strictly increasing" in str(e):
+                    self._sync_sequence_from_canister()
+                    entry.sequence_number = self._sequence
+                    candid_args = self._build_candid_args(
+                        entry, chain_hash, previous_chain_hash, local_action_id, payload_bytes,
+                    )
+                    try:
+                        result = self._transport.call_update("addLedgerEntry", candid_args)
+                        action_id = (
+                            result.get("actionId") or result.get("_3776271665") or local_action_id
+                        )
+                        self._chain_heads[entry.session_id] = chain_hash
+                        self._sequence += 1
+                        self._write_snapshot(action_id, chain_hash, entry.session_id, now_ms)
+                        return action_id
+                    except Exception:
+                        pass  # Fall through to spill
                 if self._fail_open:
                     translated = translate_error(str(e), key_id=self._api_key_id)
-                    logger.warning(
-                        "Failed to log action (fail_open=True, continuing): %s",
-                        translated,
-                        exc_info=True,
-                    )
-                    # CRITICAL FIX (F-3): Do NOT advance chain head or sequence
-                    # when the canister never received the entry.
+                    logger.warning("Failed to log action (fail_open=True): %s", translated)
                     return f"spilled_{uuid.uuid4().hex[:8]}"
                 raise
 
@@ -919,52 +977,20 @@ class AegisClient:
         model_provider = ""
         model_id = ""
 
-        # Detect installed frameworks (collect all, not last-write-wins)
-        try:
-            import langchain  # type: ignore[import-untyped,import-not-found]
-
-            frameworks.append("langchain")
-            versions.append(getattr(langchain, "__version__", "unknown"))
-        except ImportError:
-            pass
-
-        try:
-            import crewai  # type: ignore[import-untyped]
-
-            frameworks.append("crewai")
-            versions.append(getattr(crewai, "__version__", "unknown"))
-        except ImportError:
-            pass
-
-        try:
-            import autogen  # type: ignore[import-untyped,import-not-found]
-
-            frameworks.append("autogen")
-            versions.append(getattr(autogen, "__version__", "unknown"))
-        except ImportError:
-            pass
-
-        try:
-            import openai  # type: ignore[import-untyped]
-
-            frameworks.append("openai_agents")
-            versions.append(getattr(openai, "__version__", "unknown"))
-        except ImportError:
-            pass
-
-        try:
-            import claude_agent_sdk  # type: ignore[import-untyped,import-not-found]
-
-            frameworks.append("anthropic_sdk")
-            versions.append(getattr(claude_agent_sdk, "__version__", "unknown"))
-        except ImportError:
-            pass
-
+        for mod_name, fw_name in [
+            ("langchain", "langchain"), ("crewai", "crewai"),
+            ("autogen", "autogen"), ("openai", "openai_agents"),
+            ("claude_agent_sdk", "anthropic_sdk"),
+        ]:
+            try:
+                mod = __import__(mod_name)
+                frameworks.append(fw_name)
+                versions.append(getattr(mod, "__version__", "unknown"))
+            except ImportError:
+                pass
         framework = "+".join(frameworks) if frameworks else "unknown"
         framework_version = "+".join(versions) if versions else "0.0.0"
-
         runtime = f"python{sys.version_info.major}.{sys.version_info.minor}"
-
         return Environment(
             framework=framework,
             framework_version=framework_version,

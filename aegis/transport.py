@@ -232,9 +232,10 @@ class CanisterTransport:
                 )
             else:
                 identity = Identity()
-                logger.warning(
+                logger.debug(
                     "No private_key_path set — using random IC identity. "
-                    "Canister caller check will fail unless org_id matches this principal: %s",
+                    "Public queries work fine. For writes, set private_key_path. "
+                    "Random principal: %s",
                     identity.sender(),
                 )
 
@@ -282,8 +283,13 @@ class CanisterTransport:
                         e,
                     )
 
-        # All retries exhausted — spill to local disk
-        self._spill_to_disk(method, args)
+        # All retries exhausted — spill to local disk (only allowed methods)
+        if method in _ALLOWED_SPILL_METHODS:
+            self._spill_to_disk(method, args)
+        else:
+            logger.warning(
+                "Method %s is not spillable — discarding failed call", method
+            )
         logger.error(
             "All retries exhausted for %s. Entry spilled to %s",
             method,
@@ -409,12 +415,14 @@ class CanisterTransport:
         else:
             self._cached_spill_count += 1
 
-    def drain_spill_buffer(self) -> int:
+    def drain_spill_buffer(self, max_entries: int = 10) -> int:
         """
-        Retry all spilled entries. Returns count of successfully drained entries.
+        Retry spilled entries. Returns count of successfully drained entries.
 
         Called automatically on each successful log_action to clear the backlog.
         Entries that fail again remain in the spill file.
+        Processes at most ``max_entries`` per call to prevent RAM exhaustion
+        (each replay creates ic-py Agent objects that are expensive).
         """
         if not self._spill_path.exists():
             return 0
@@ -425,6 +433,7 @@ class CanisterTransport:
 
         failed: list[str] = []
         drained = 0
+        skipped = 0
 
         raw_ttl = int(os.environ.get("AEGIS_SPILL_TTL_DAYS", "30"))
         spill_ttl_days = max(1, min(365, raw_ttl))
@@ -437,6 +446,11 @@ class CanisterTransport:
         now_ms = int(time.time() * 1000)
 
         for line in lines:
+            # Batch limit: defer remaining entries to next drain cycle
+            if drained + skipped >= max_entries:
+                failed.append(line)
+                continue
+
             try:
                 entry = json.loads(line)
 
@@ -550,9 +564,32 @@ class CanisterTransport:
 
                 self._do_call(method, args, call_type="update")
                 drained += 1
-            except Exception:  # noqa: BLE001 — fail-open spill replay
-                logger.warning("Spill replay failed for entry", exc_info=True)
-                failed.append(line)
+            except Exception as exc:  # noqa: BLE001 — fail-open spill replay
+                err_msg = str(exc).lower()
+                # Permanent failures: drop instead of endless retry
+                if any(sig in err_msg for sig in (
+                    "sequence number must be strictly increasing",
+                    "sequence",
+                    "duplicate",
+                    "already exists",
+                    "rate limit",
+                    "does not belong",
+                    "unauthorized",
+                    "dpa not accepted",
+                    "concurrent write",
+                    "key not found",
+                    "key is revoked",
+                    "anonymous",
+                )):
+                    logger.warning(
+                        "Discarding spill entry (permanent failure): %s",
+                        str(exc)[:200],
+                    )
+                    skipped += 1
+                else:
+                    # Transient failure (network, timeout) — retry next time
+                    logger.warning("Spill replay failed (will retry)", exc_info=True)
+                    failed.append(line)
 
         # Rewrite spill file with only the still-failed entries
         if failed:
