@@ -346,13 +346,26 @@ def _cmd_verify_chain(args: list[str]) -> None:
         from ic.candid import Types  # type: ignore[import-untyped]
 
         transport, canister_id = _transport_from_config(canister_id_arg)
-        entries = transport.call_query(
-            "getTrace", [{"type": Types.Text, "value": session_id}]
+        result = transport.call_query(
+            "getTrace", [
+                {"type": Types.Text, "value": session_id},
+                {"type": Types.Null, "value": None},
+                {"type": Types.Null, "value": None},
+            ]
         )
+        entries = result.get("raw", result) if isinstance(result, dict) else result
 
         if not entries or not isinstance(entries, list):
             print(f"No entries found for session {session_id}")
             sys.exit(2)
+
+        from aegis.integrity import LEDGER_ENTRY_HASH_MAP
+        entries = [_map_candid_keys(e, LEDGER_ENTRY_HASH_MAP) for e in entries]
+        # payloadHex comes as list with single hex string
+        for e in entries:
+            ph = e.get("payloadHex")
+            if isinstance(ph, list) and ph:
+                e["payloadHex"] = ph[0]
 
         result = verify_chain(entries)
 
@@ -545,8 +558,11 @@ Examples:
         sys.exit(1)
 
 _LIST_SESSIONS_HASH_MAP: dict[str, str] = {
-    "_3457905975": "sessionId",
-    "_576569836": "entryCount",
+    "_3142408401": "sessionId",
+    "_793140989": "entryCount",
+    "_3430636010": "lastActivityNs",
+    "_146711460": "chainIntact",
+    "_2213923415": "signatureAlgorithm",
 }
 
 def _cmd_spill_status() -> None:
@@ -604,8 +620,13 @@ def _cmd_list_sessions(args: list[str]) -> None:
         sys.exit(1)
 
     try:
-        result = transport.call_query("listMySessions", [])
-        sessions = result if isinstance(result, list) else result.get("ok", [])
+        from ic.candid import Types  # type: ignore[import-untyped]
+        result = transport.call_query("listMySessions", [
+            {"type": Types.Null, "value": None},
+            {"type": Types.Null, "value": None},
+        ])
+        raw = result.get("raw", result) if isinstance(result, dict) else result
+        sessions = raw if isinstance(raw, list) else []
 
         if not sessions:
             print("No sessions found. Log your first action with @client.trace().")

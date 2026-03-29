@@ -41,6 +41,33 @@ VERIFY_HASH_MAP: dict[str, str] = {
     "_2933681001": "entryTimestampNs",
 }
 
+LEDGER_ENTRY_HASH_MAP: dict[str, str] = {
+    "_3776271665": "actionId",
+    "_532604909": "payloadHex",
+    "_317326703": "chainHash",
+    "_2601806392": "previousChainHash",
+    "_3248078826": "sequenceNumber",
+    "_891494111": "orgId",
+    "_1625980416": "keyId",
+    "_3142408401": "sessionId",
+    "_1291934552": "tool",
+    "_100394802": "status",
+    "_874996106": "payloadSignature",
+    "_78284984": "serverTimestampNs",
+    "_346465617": "clientTimestampMs",
+    "_2039288168": "confidenceScore",
+    "_749554439": "decisionReasoning",
+    "_204664056": "inputHash",
+    "_2801565551": "outputHash",
+    "_3752841178": "durationMs",
+    "_1369740414": "framework",
+    "_2274208491": "signatureAlgorithm",
+    "_309830882": "modelId",
+    "_2834124923": "parentActionId",
+    "_3557243166": "modelProvider",
+    "_3982974948": "sdkVersion",
+}
+
 API_KEY_HASH_MAP: dict[str, str] = {
     "_3741232986": "keyId",
     "_891494111": "orgId",
