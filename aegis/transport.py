@@ -223,6 +223,11 @@ class CanisterTransport:
             # Use the agent's PEM key as IC signing identity so that
             # msg.caller == principal(private_key) == org_id on the canister.
             if self._config.private_key_path and self._config.private_key_path.exists():
+                pem_size = self._config.private_key_path.stat().st_size
+                if pem_size > 100_000:
+                    raise ValueError(
+                        f"PEM file too large ({pem_size} bytes) — expected <100KB"
+                    )
                 pem_str = self._config.private_key_path.read_text()
                 identity = Identity.from_pem(pem_str)
                 logger.debug(
@@ -369,7 +374,19 @@ class CanisterTransport:
         # Enforce spill buffer size limit — discard oldest entries if full
         trimmed = False
         if self._spill_path.exists():
-            existing = self._spill_path.read_text().strip().split("\n")
+            # Guard against unbounded memory from corrupted/bloated spill files
+            spill_size = self._spill_path.stat().st_size
+            if spill_size > 10 * 1024 * 1024:  # 10 MB safety limit
+                logger.error(
+                    "Spill file too large (%d bytes) — truncating to empty.",
+                    spill_size,
+                )
+                self._spill_path.unlink()
+                self._cached_spill_count = 0
+            if self._spill_path.exists():
+                existing = self._spill_path.read_text().strip().split("\n")
+            else:
+                existing = []
             existing = [line for line in existing if line]
             if len(existing) >= _MAX_SPILL_ENTRIES:
                 discard_count = len(existing) - _MAX_SPILL_ENTRIES + 1
@@ -379,7 +396,9 @@ class CanisterTransport:
                     discard_count,
                 )
                 existing = existing[discard_count:]
-                self._spill_path.write_text("\n".join(existing) + "\n")
+                tmp = self._spill_path.with_suffix(".tmp")
+                tmp.write_text("\n".join(existing) + "\n", encoding="utf-8")
+                tmp.replace(self._spill_path)
                 trimmed = True
 
         # H-3 FIX: Extract raw values from Candid args so they survive
@@ -591,9 +610,11 @@ class CanisterTransport:
                     logger.warning("Spill replay failed (will retry)", exc_info=True)
                     failed.append(line)
 
-        # Rewrite spill file with only the still-failed entries
+        # Rewrite spill file with only the still-failed entries (atomic: GR-7)
         if failed:
-            self._spill_path.write_text("\n".join(failed) + "\n")
+            tmp = self._spill_path.with_suffix(".tmp")
+            tmp.write_text("\n".join(failed) + "\n", encoding="utf-8")
+            tmp.replace(self._spill_path)
         else:
             self._spill_path.unlink(missing_ok=True)
 

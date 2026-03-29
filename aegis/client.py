@@ -117,8 +117,8 @@ class AegisClient:
                         before hashing. Redacted values are replaced with
                         SHA-256 hashes. Required for DPA Art. 28 compliance.
             signature_scheme: Cryptographic signature algorithm to use.
-                              Supported: "ed25519", "ml-dsa-65" (FIPS 204),
-                              "hybrid" (Ed25519 + ML-DSA-65). Defaults to
+                              Supported: "ed25519", "ml-dsa-65", "ml-dsa-87",
+                              "slh-dsa-128s", "hybrid". Defaults to
                               ``~/.aegis/config.toml`` [signing] default_scheme,
                               or "ed25519" if not configured. PQ algorithms
                               require pqcrypto + signing_key_path.

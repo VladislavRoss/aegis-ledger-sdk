@@ -203,7 +203,10 @@ def write_config(
             lines.append(f'{k} = "{safe_v}"')
         lines.append("")
 
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    # GR-7: Atomic write — tmp + replace to prevent corruption on crash
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    tmp.replace(path)
     return path
 
 

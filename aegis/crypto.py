@@ -119,9 +119,11 @@ def generate_keypair(path: str | Path) -> tuple[Ed25519PrivateKey, str]:
 
     pub_hex = get_public_key_hex(private_key)
 
-    # Also write the public key to a .pub file for convenience
+    # Also write the public key to a .pub file for convenience (GR-7: atomic)
     pub_path = key_path.with_suffix(".pub")
-    pub_path.write_text(pub_hex + "\n")
+    pub_tmp = pub_path.with_suffix(".tmp")
+    pub_tmp.write_text(pub_hex + "\n")
+    pub_tmp.replace(pub_path)
 
     return private_key, pub_hex
 

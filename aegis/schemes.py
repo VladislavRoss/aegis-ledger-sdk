@@ -370,7 +370,9 @@ def generate_mldsa65_keypair(path: str | Path) -> tuple[bytes, str]:
 
     pub_hex = pk.hex()
     pub_path = key_path.parent / (key_path.name + ".pub")
-    pub_path.write_text(pub_hex + "\n")
+    pub_tmp = pub_path.with_suffix(".tmp")
+    pub_tmp.write_text(pub_hex + "\n")
+    pub_tmp.replace(pub_path)
 
     return sk, pub_hex
 
@@ -428,7 +430,9 @@ def generate_mldsa87_keypair(path: str | Path) -> tuple[bytes, str]:
 
     pub_hex = pk.hex()
     pub_path = key_path.parent / (key_path.name + ".pub")
-    pub_path.write_text(pub_hex + "\n")
+    pub_tmp = pub_path.with_suffix(".tmp")
+    pub_tmp.write_text(pub_hex + "\n")
+    pub_tmp.replace(pub_path)
 
     return sk, pub_hex
 
@@ -486,7 +490,9 @@ def generate_slhdsa128s_keypair(path: str | Path) -> tuple[bytes, str]:
 
     pub_hex = pk.hex()
     pub_path = key_path.parent / (key_path.name + ".pub")
-    pub_path.write_text(pub_hex + "\n")
+    pub_tmp = pub_path.with_suffix(".tmp")
+    pub_tmp.write_text(pub_hex + "\n")
+    pub_tmp.replace(pub_path)
 
     return sk, pub_hex
 
@@ -544,7 +550,9 @@ def generate_hybrid_keypair(
 
     hybrid_pub_hex = ed_pub_hex + ml_pub_hex  # 64 + 3904 = 3968 hex
     pub_path = key_path.with_suffix(".hybrid.pub")
-    pub_path.write_text(hybrid_pub_hex + "\n")
+    pub_tmp = pub_path.with_suffix(".tmp")
+    pub_tmp.write_text(hybrid_pub_hex + "\n")
+    pub_tmp.replace(pub_path)
 
     return ed_key, ml_sk, hybrid_pub_hex
 

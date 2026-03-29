@@ -418,7 +418,9 @@ def _gen_hybrid(key_dir: Path) -> tuple[Path, str, str]:
             ed_pub = get_public_key_hex(load_private_key(str(key_path)))
             ml_pub = ml_pub_path.read_text(encoding="utf-8").strip()
             pub_hex = ed_pub + ml_pub
-            pub_path.write_text(pub_hex + "\n")
+            pub_tmp = pub_path.with_suffix(".tmp")
+            pub_tmp.write_text(pub_hex + "\n")
+            pub_tmp.replace(pub_path)
         else:
             pub_hex = "???"
     else:
@@ -438,7 +440,9 @@ def _gen_hybrid(key_dir: Path) -> tuple[Path, str, str]:
                 if ml_pub_path.exists():
                     ml_pub_hex = ml_pub_path.read_text(encoding="utf-8").strip()
             pub_hex = ed_pub_hex + ml_pub_hex
-            pub_path.write_text(pub_hex + "\n")
+            pub_tmp = pub_path.with_suffix(".tmp")
+            pub_tmp.write_text(pub_hex + "\n")
+            pub_tmp.replace(pub_path)
         else:
             from aegis.crypto import generate_hybrid_keypair
 
