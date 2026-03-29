@@ -230,16 +230,15 @@ class AegisClient:
                         chain_hash = v
             if isinstance(seq_head, list) and seq_head:
                 seq_head = seq_head[0]
-            if isinstance(seq_head, (int, float)) and int(seq_head) > 0:
+            has_entries = isinstance(chain_hash, str) and len(chain_hash) == 64
+            if isinstance(seq_head, (int, float)) and (int(seq_head) > 0 or has_entries):
                 self._sequence = int(seq_head) + 1
-            if isinstance(chain_hash, str) and chain_hash:
+            if has_entries:
                 self._chain_heads[self._session_id] = chain_hash
         except Exception:
             pass
 
-    # ------------------------------------------------------------------
-    # Factory: zero-config construction from ~/.aegis/config.toml
-    # ------------------------------------------------------------------
+    # -- Factory: zero-config construction from ~/.aegis/config.toml ----
 
     @classmethod
     def from_config(
