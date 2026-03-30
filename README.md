@@ -90,6 +90,47 @@ with AegisClient(...) as client:
 # Spill buffer drained on exit
 ```
 
+## KYA — Know Your Agent
+
+Register agent identity on-chain for transparent AI governance:
+
+```python
+# Register an agent profile
+client.register_agent(
+    agent_id="agent-billing-v2",
+    name="Billing Agent",
+    description="Handles invoice generation and payment processing",
+    capabilities=["stripe.charge", "invoice.create", "refund.process"],
+    framework="langchain",
+    model_id="gpt-4o",
+)
+
+# Update an existing profile
+client.update_agent_profile("agent-billing-v2", name="Billing Agent v3", model_id="gpt-4.1")
+
+# Retrieve public agent facts (no auth required)
+facts = client.get_agent_facts("agent-billing-v2")
+```
+
+Agent profiles are stored on-chain and publicly verifiable — any third party can inspect what an agent claims to do.
+
+## OpenTelemetry Correlation
+
+Aegis entries can carry OpenTelemetry context for correlation with your existing observability stack:
+
+```python
+# Auto-extracted from active OTel span (if opentelemetry SDK installed)
+client.log_tool_call("search", input_data=q, output_data=r, duration_ms=50)
+# → otel_trace_id, otel_span_id auto-populated
+
+# Or pass explicitly
+client.log_tool_call(
+    "search", input_data=q, output_data=r, duration_ms=50,
+    otel_trace_id="abc123", otel_span_id="def456",
+    cost_usd=0.003, token_count=1500,
+)
+```
+
 ## Framework Integrations
 
 ### LangChain
@@ -207,17 +248,42 @@ client = AegisClient(..., redact_pii=True)  # default
 ## CLI
 
 ```bash
-aegis init                                                 # Interactive setup (recommended)
-aegis keygen ./key.pem                                     # Generate Ed25519 keypair (advanced)
+# Setup & diagnostics
+aegis init                                                 # Interactive setup wizard
+aegis test                                                 # Send test entry + verify on-chain
+aegis doctor                                               # Check SDK health (config, keys, canister)
+aegis version                                              # Print SDK version
+
+# Key generation
+aegis keygen ./key.pem                                     # Generate Ed25519 keypair
 aegis keygen ./key.mldsa65 --algorithm ml-dsa-65           # Generate ML-DSA-65 keypair
 aegis keygen ./key --algorithm hybrid                      # Generate Hybrid keypair
+
+# Verification
 aegis verify <canister_id> <action_id>                     # Verify single entry
 aegis verify-chain <canister_id> <session_id>              # Verify full session chain
-aegis status <canister_id>                                 # Check canister health
-aegis report <canister_id> --format eu-ai-act              # Generate compliance report
+
+# Canister queries
+aegis status <canister_id>                                 # Canister health + chain stats
+aegis list-sessions <canister_id>                          # List your sessions
+aegis session-analytics <session_id>                       # Error rate, duration, action types
+aegis org-stats <canister_id>                              # Aggregated org statistics
+aegis spill-status                                         # Show pending offline buffer
+
+# Compliance reports
+aegis report <canister_id> --format eu-ai-act              # EU AI Act Art. 12
 aegis report <canister_id> --format all -o ./reports/      # All formats
+
+# Key management (self-service)
+aegis register-key <id> --key-file <f>                     # Register new API key
+aegis revoke <key_id>                                      # Revoke key (confirmation required)
+aegis reactivate-key <key_id>                              # Reactivate revoked key
+aegis delete-key <key_id>                                  # Permanently delete revoked key
+aegis update-key-desc <key_id> <desc>                      # Update key description
+
+# Migration
 aegis migrate <canister_id> <session_id> --to hybrid       # Re-sign with new algorithm
-aegis version                                              # Print SDK version
+aegis purge-session <session_id>                           # Purge session entries (owner/admin)
 ```
 
 ## How It Works
@@ -252,6 +318,10 @@ Fail-open: if canister unreachable, entries buffer locally (~/.aegis/spill/) and
 | `chain_hash` | SHA-256 linking to previous entry |
 | `payload_signature` | Cryptographic signature (Ed25519, ML-DSA-65, ML-DSA-87, SLH-DSA-128s, or Hybrid) |
 | `sequence_number` | Monotonic counter (gap detection) |
+| `otel_trace_id` | OpenTelemetry trace ID (optional, for correlation) |
+| `otel_span_id` | OpenTelemetry span ID (optional) |
+| `cost_usd` | LLM call cost in USD (optional) |
+| `token_count` | Token usage (optional) |
 
 **What does NOT get logged:** Raw payloads, API keys, secrets, PII. Only hashes — you control your data.
 
