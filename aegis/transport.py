@@ -27,8 +27,14 @@ from typing import Any
 logger = logging.getLogger("aegis.transport")
 
 
-_ALLOWED_SPILL_METHODS: frozenset[str] = frozenset({"addLedgerEntry"})
+_ALLOWED_SPILL_METHODS: frozenset[str] = frozenset({"addLedgerEntry", "addLedgerEntryV2"})
 _MAX_SPILL_ENTRIES: int = 1000
+
+
+def _opt(rec: dict, key: str, default: Any) -> Any:
+    """Extract first element from Candid Opt list, or default."""
+    v = rec.get(key)
+    return v[0] if v else default
 
 
 def _principal_text_to_bytes(text: str) -> bytes:
@@ -151,6 +157,131 @@ def _build_add_ledger_entry_args(
         {"type": Types.Text,      "value": payload_hex},
         {"type": Types.Text,      "value": key_id},
     ]
+
+
+def _build_add_ledger_entry_v2_args(
+    *,
+    action_id: str,
+    org_id: str,
+    agent_id: str,
+    session_id: str,
+    sequence_number: int,
+    action_type: str,
+    tool: str,
+    input_hash: str,
+    output_hash: str,
+    input_preview: str,
+    output_preview: str,
+    duration_ms: int,
+    status: str,
+    parent_action_id: str,
+    decision_reasoning: str,
+    confidence_score: float,
+    framework: str,
+    model_id: str,
+    client_timestamp_ms: int,
+    payload_signature: str,
+    chain_hash: str,
+    previous_chain_hash: str,
+    payload_hex: str = "",
+    key_id: str = "",
+    metadata: str = "",
+    sdk_version: str = "",
+    schema_version: int = 2,
+    otel_trace_id: str = "",
+    otel_span_id: str = "",
+    otel_parent_span_id: str = "",
+    cost_usd: float = 0.0,
+    token_count: int = 0,
+) -> list[dict[str, Any]]:
+    """Build a single Candid Record argument for addLedgerEntryV2."""
+    try:
+        from ic.candid import Types  # type: ignore[import-untyped]
+    except ImportError as e:
+        raise CanisterError(
+            "ic-py not installed — cannot build Candid args. Fix: pip install ic-py",
+            error_code="NO_IC_PY",
+        ) from e
+
+    _action_type_variant = Types.Variant({
+        "toolCall": Types.Null,
+        "decision": Types.Null,
+        "observation": Types.Null,
+        "error": Types.Null,
+        "humanOverride": Types.Null,
+    })
+
+    record_type = Types.Record({
+        "actionId": Types.Text,
+        "orgId": Types.Principal,
+        "agentId": Types.Text,
+        "sessionId": Types.Text,
+        "sequenceNumber": Types.Nat,
+        "actionType": _action_type_variant,
+        "tool": Types.Text,
+        "inputHash": Types.Text,
+        "outputHash": Types.Text,
+        "inputPreview": Types.Text,
+        "outputPreview": Types.Text,
+        "durationMs": Types.Nat,
+        "status": Types.Text,
+        "parentActionId": Types.Text,
+        "decisionReasoning": Types.Text,
+        "confidenceScore": Types.Float64,
+        "framework": Types.Text,
+        "modelId": Types.Text,
+        "clientTimestampMs": Types.Int,
+        "payloadSignature": Types.Text,
+        "chainHash": Types.Text,
+        "previousChainHash": Types.Text,
+        "payloadHex": Types.Text,
+        "keyId": Types.Text,
+        "metadata": Types.Opt(Types.Text),
+        "sdkVersion": Types.Opt(Types.Text),
+        "schemaVersion": Types.Opt(Types.Nat),
+        "otelTraceId": Types.Opt(Types.Text),
+        "otelSpanId": Types.Opt(Types.Text),
+        "otelParentSpanId": Types.Opt(Types.Text),
+        "costUsd": Types.Opt(Types.Float64),
+        "tokenCount": Types.Opt(Types.Nat),
+    })
+
+    record_value = {
+        "actionId": action_id,
+        "orgId": _principal_text_to_bytes(org_id),
+        "agentId": agent_id,
+        "sessionId": session_id,
+        "sequenceNumber": sequence_number,
+        "actionType": action_type_to_candid_variant(action_type),
+        "tool": tool,
+        "inputHash": input_hash,
+        "outputHash": output_hash,
+        "inputPreview": input_preview,
+        "outputPreview": output_preview,
+        "durationMs": duration_ms,
+        "status": status,
+        "parentActionId": parent_action_id,
+        "decisionReasoning": decision_reasoning,
+        "confidenceScore": confidence_score,
+        "framework": framework,
+        "modelId": model_id,
+        "clientTimestampMs": client_timestamp_ms,
+        "payloadSignature": payload_signature,
+        "chainHash": chain_hash,
+        "previousChainHash": previous_chain_hash,
+        "payloadHex": payload_hex,
+        "keyId": key_id,
+        "metadata": [metadata] if metadata else [],
+        "sdkVersion": [sdk_version] if sdk_version else [],
+        "schemaVersion": [schema_version],
+        "otelTraceId": [otel_trace_id] if otel_trace_id else [],
+        "otelSpanId": [otel_span_id] if otel_span_id else [],
+        "otelParentSpanId": [otel_parent_span_id] if otel_parent_span_id else [],
+        "costUsd": [cost_usd] if cost_usd > 0.0 else [],
+        "tokenCount": [token_count] if token_count > 0 else [],
+    }
+
+    return [{"type": record_type, "value": record_value}]
 
 
 class TransportConfig:
@@ -405,17 +536,36 @@ class CanisterTransport:
         # JSON serialization. ic-py Types objects are NOT JSON-serializable,
         # so json.dumps(default=str) corrupts them irreversibly.
         # Bytes (Principal) are stored as hex strings to avoid corruption.
-        raw_values = []
-        for arg in args:
-            val = arg["value"]
-            raw_values.append(val.hex() if isinstance(val, (bytes, bytearray)) else val)
-        entry = {
-            "method": method,
-            "raw_values": raw_values,
-            "timestamp_ms": int(time.time() * 1000),
-            "canister_id": self._config.canister_id,
-            "spill_version": 3,
-        }
+        is_v2_record = (
+            len(args) == 1
+            and isinstance(args[0].get("value"), dict)
+            and "actionId" in args[0]["value"]
+        )
+        if is_v2_record:
+            # V2 Record: single dict — convert bytes fields to hex
+            rec = {}
+            for k, v in args[0]["value"].items():
+                rec[k] = v.hex() if isinstance(v, (bytes, bytearray)) else v
+            entry = {
+                "method": method,
+                "record_value": rec,
+                "timestamp_ms": int(time.time() * 1000),
+                "canister_id": self._config.canister_id,
+                "spill_version": 4,
+            }
+        else:
+            # V1 positional args: list of values
+            raw_values = []
+            for arg in args:
+                val = arg["value"]
+                raw_values.append(val.hex() if isinstance(val, (bytes, bytearray)) else val)
+            entry = {
+                "method": method,
+                "raw_values": raw_values,
+                "timestamp_ms": int(time.time() * 1000),
+                "canister_id": self._config.canister_id,
+                "spill_version": 3,
+            }
         # H-1: create/append with 0o600 (owner read/write only)
         fd = os.open(str(self._spill_path), os.O_CREAT | os.O_WRONLY | os.O_APPEND, 0o600)
         try:
@@ -490,7 +640,60 @@ class CanisterTransport:
 
                 # Rebuild Candid args from stored raw values
                 spill_ver = entry.get("spill_version", 1)
-                if spill_ver >= 2:
+                if spill_ver == 4:
+                    # V2 Record format — rebuild from record_value dict
+                    rec = entry["record_value"]
+                    # Convert orgId hex back to bytes
+                    org_hex = rec.get("orgId", "")
+                    try:
+                        org_bytes = bytes.fromhex(org_hex) if isinstance(org_hex, str) else org_hex
+                    except ValueError:
+                        logger.warning(
+                            "Discarding v4 spill: invalid orgId hex: %s",
+                            str(org_hex)[:50],
+                        )
+                        continue
+                    rec_copy = dict(rec)
+                    rec_copy["orgId"] = org_bytes
+                    # Reconstruct V2 Candid Record args
+                    args = _build_add_ledger_entry_v2_args(
+                        action_id=rec_copy["actionId"],
+                        org_id="__raw__",  # placeholder, overridden below
+                        agent_id=rec_copy["agentId"],
+                        session_id=rec_copy["sessionId"],
+                        sequence_number=rec_copy["sequenceNumber"],
+                        action_type=_REVERSE_ACTION_TYPE_MAP[next(iter(rec_copy["actionType"]))],
+                        tool=rec_copy["tool"],
+                        input_hash=rec_copy["inputHash"],
+                        output_hash=rec_copy["outputHash"],
+                        input_preview=rec_copy["inputPreview"],
+                        output_preview=rec_copy["outputPreview"],
+                        duration_ms=rec_copy["durationMs"],
+                        status=rec_copy["status"],
+                        parent_action_id=rec_copy["parentActionId"],
+                        decision_reasoning=rec_copy["decisionReasoning"],
+                        confidence_score=rec_copy["confidenceScore"],
+                        framework=rec_copy["framework"],
+                        model_id=rec_copy["modelId"],
+                        client_timestamp_ms=rec_copy["clientTimestampMs"],
+                        payload_signature=rec_copy["payloadSignature"],
+                        chain_hash=rec_copy["chainHash"],
+                        previous_chain_hash=rec_copy["previousChainHash"],
+                        payload_hex=rec_copy["payloadHex"],
+                        key_id=rec_copy["keyId"],
+                        metadata=_opt(rec_copy, "metadata", ""),
+                        sdk_version=_opt(rec_copy, "sdkVersion", ""),
+                        otel_trace_id=_opt(rec_copy, "otelTraceId", ""),
+                        otel_span_id=_opt(rec_copy, "otelSpanId", ""),
+                        otel_parent_span_id=_opt(
+                            rec_copy, "otelParentSpanId", "",
+                        ),
+                        cost_usd=_opt(rec_copy, "costUsd", 0.0),
+                        token_count=_opt(rec_copy, "tokenCount", 0),
+                    )
+                    # Fix orgId: replace placeholder with actual bytes
+                    args[0]["value"]["orgId"] = org_bytes
+                elif spill_ver >= 2:
                     v = entry["raw_values"]
 
                     # Validate org_id (index 1) — detect corruption from

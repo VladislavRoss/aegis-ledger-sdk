@@ -98,10 +98,10 @@ class TestTraceDecorator:
             return "done"
 
         slow_tool()
-        # The duration_ms is embedded in the Candid args at position 11
+        # V2: duration_ms is in the Record value
         assert len(calls) == 1
-        duration_arg = calls[0][11]  # position 11 = duration_ms
-        assert duration_arg["value"] >= 40  # at least 40ms
+        record_value = calls[0][0]["value"]
+        assert record_value["durationMs"] >= 40  # at least 40ms
 
     def test_trace_custom_tool_name(self, mock_client):
         """Custom tool_name overrides the function's qualname."""
@@ -119,9 +119,8 @@ class TestTraceDecorator:
 
         generic_function()
         assert len(calls) == 1
-        # Position 6 = tool name
-        tool_arg = calls[0][6]
-        assert tool_arg["value"] == "custom.api.call"
+        record_value = calls[0][0]["value"]
+        assert record_value["tool"] == "custom.api.call"
 
     def test_trace_hashes_input_output(self, mock_client):
         """Input and output are SHA-256 hashed, not stored raw."""
@@ -139,9 +138,9 @@ class TestTraceDecorator:
 
         my_func("sensitive query")
         assert len(calls) == 1
-        # Position 7 = input_hash, Position 8 = output_hash
-        input_hash = calls[0][7]["value"]
-        output_hash = calls[0][8]["value"]
+        record_value = calls[0][0]["value"]
+        input_hash = record_value["inputHash"]
+        output_hash = record_value["outputHash"]
         assert input_hash.startswith("sha256:")
         assert output_hash.startswith("sha256:")
         assert len(input_hash) == 71  # "sha256:" + 64 hex chars

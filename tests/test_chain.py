@@ -134,37 +134,32 @@ def test_chain_heads_changes_with_each_entry():
 
 
 def test_chain_hash_passed_to_candid_args():
-    """chain_hash (Position 20) muss 64-char hex sein (nicht leer)."""
+    """chainHash im Record muss 64-char hex sein (nicht leer)."""
     client, mock_transport = _make_client()
     client.log_tool_call(tool="search", input_data={}, output_data={}, duration_ms=0)
 
-    args_list = mock_transport.call_update.call_args[0][1]
-    chain_hash_arg = args_list[20]  # Position 20 = chainHash
-    assert "value" in chain_hash_arg
-    chain_hash = chain_hash_arg["value"]
+    record_value = mock_transport.call_update.call_args[0][1][0]["value"]
+    chain_hash = record_value["chainHash"]
     assert len(chain_hash) == 64
     assert all(c in "0123456789abcdef" for c in chain_hash)
 
 
 def test_previous_chain_hash_first_entry_is_empty():
-    """Erster Eintrag: previousChainHash (Position 21) muss '' sein."""
+    """Erster Eintrag: previousChainHash im Record muss '' sein."""
     client, mock_transport = _make_client()
     client.log_tool_call(tool="search", input_data={}, output_data={}, duration_ms=0)
 
-    args_list = mock_transport.call_update.call_args[0][1]
-    prev_hash_arg = args_list[21]  # Position 21 = previousChainHash
-    assert prev_hash_arg["value"] == ""
+    record_value = mock_transport.call_update.call_args[0][1][0]["value"]
+    assert record_value["previousChainHash"] == ""
 
 
 def test_payload_hex_passed_to_candid_args():
-    """payloadHex (Position 22) muss nicht-leerer hex-String sein."""
+    """payloadHex im Record muss nicht-leerer hex-String sein."""
     client, mock_transport = _make_client()
     client.log_tool_call(tool="search", input_data={}, output_data={}, duration_ms=0)
 
-    args_list = mock_transport.call_update.call_args[0][1]
-    payload_hex_arg = args_list[22]  # Position 22 = payloadHex
-    assert "value" in payload_hex_arg
-    payload_hex = payload_hex_arg["value"]
+    record_value = mock_transport.call_update.call_args[0][1][0]["value"]
+    payload_hex = record_value["payloadHex"]
     assert len(payload_hex) > 0
     assert all(c in "0123456789abcdef" for c in payload_hex)
 
@@ -174,12 +169,12 @@ def test_previous_chain_hash_second_entry_equals_first_chain_hash():
     client, mock_transport = _make_client()
 
     client.log_tool_call(tool="first", input_data={}, output_data={}, duration_ms=0)
-    first_args = mock_transport.call_update.call_args[0][1]
-    first_chain_hash = first_args[20]["value"]
+    first_record = mock_transport.call_update.call_args[0][1][0]["value"]
+    first_chain_hash = first_record["chainHash"]
 
     client.log_tool_call(tool="second", input_data={}, output_data={}, duration_ms=0)
-    second_args = mock_transport.call_update.call_args[0][1]
-    second_prev_hash = second_args[21]["value"]
+    second_record = mock_transport.call_update.call_args[0][1][0]["value"]
+    second_prev_hash = second_record["previousChainHash"]
 
     assert second_prev_hash == first_chain_hash
 
@@ -271,8 +266,8 @@ def test_chain_continues_correctly_after_spill():
     # First call succeeds — sets chain head
     mock_transport.call_update.return_value = {"actionId": "ok-1"}
     client.log_tool_call(tool="first", input_data={}, output_data={}, duration_ms=0)
-    first_args = mock_transport.call_update.call_args[0][1]
-    first_chain_hash = first_args[20]["value"]  # chainHash
+    first_record = mock_transport.call_update.call_args[0][1][0]["value"]
+    first_chain_hash = first_record["chainHash"]
 
     # Second call fails (spill)
     mock_transport.call_update.side_effect = ConnectionError("network down")
@@ -282,8 +277,8 @@ def test_chain_continues_correctly_after_spill():
     mock_transport.call_update.side_effect = None
     mock_transport.call_update.return_value = {"actionId": "ok-3"}
     client.log_tool_call(tool="recovery", input_data={}, output_data={}, duration_ms=0)
-    third_args = mock_transport.call_update.call_args[0][1]
-    third_prev_hash = third_args[21]["value"]  # previousChainHash
+    third_record = mock_transport.call_update.call_args[0][1][0]["value"]
+    third_prev_hash = third_record["previousChainHash"]
 
     assert third_prev_hash == first_chain_hash, (
         "After spill, next successful entry must chain off the LAST SUCCESSFUL "

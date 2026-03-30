@@ -77,10 +77,14 @@ def reset_singletons():
     ms._client = None
     ms._transport = None
     ms._client_error = None
+    ms._bg_queue.clear()
+    ms._bg_stop.set()  # stop any running bg worker
     yield
     ms._client = None
     ms._transport = None
     ms._client_error = None
+    ms._bg_queue.clear()
+    ms._bg_stop.set()
 
 
 # ---------------------------------------------------------------------------
@@ -163,35 +167,42 @@ class TestLogToolCall:
         }))
         return json.loads(result)
 
-    def test_returns_action_id(self):
+    def test_returns_queued_status(self):
         client = _make_mock_client()
         result = self._call(client)
-        assert result["action_id"] == "act_test_123"
+        assert result["status"] == "queued"
+        assert result["queue_depth"] >= 1
 
-    def test_passes_tool_name(self):
+    def test_queues_tool_name(self):
+        import aegis.mcp_server as ms
         client = _make_mock_client()
         self._call(client, tool="db_query")
-        client.log_tool_call.assert_called_once()
-        assert client.log_tool_call.call_args.kwargs["tool"] == "db_query"
+        assert len(ms._bg_queue) == 1
+        method, args, kwargs = ms._bg_queue[0]
+        assert method == "log_tool_call"
+        assert kwargs["tool"] == "db_query"
 
     def test_parses_json_input(self):
+        import aegis.mcp_server as ms
         client = _make_mock_client()
         self._call(client, input_data='{"key": "value"}')
-        call_kwargs = client.log_tool_call.call_args.kwargs
-        assert call_kwargs["input_data"] == {"key": "value"}
+        _, _, kwargs = ms._bg_queue[0]
+        assert kwargs["input_data"] == {"key": "value"}
 
     def test_raw_string_fallback_on_invalid_json(self):
+        import aegis.mcp_server as ms
         client = _make_mock_client()
         self._call(client, input_data="not-json")
-        call_kwargs = client.log_tool_call.call_args.kwargs
-        assert call_kwargs["input_data"] == "not-json"
+        _, _, kwargs = ms._bg_queue[0]
+        assert kwargs["input_data"] == "not-json"
 
-    def test_passes_duration_and_status(self):
+    def test_queues_duration_and_status(self):
+        import aegis.mcp_server as ms
         client = _make_mock_client()
         self._call(client, duration_ms=500, status="error")
-        call_kwargs = client.log_tool_call.call_args.kwargs
-        assert call_kwargs["duration_ms"] == 500
-        assert call_kwargs["status"] == "error"
+        _, _, kwargs = ms._bg_queue[0]
+        assert kwargs["duration_ms"] == 500
+        assert kwargs["status"] == "error"
 
     def test_raises_when_client_not_configured(self):
         import aegis.mcp_server as ms
@@ -223,25 +234,31 @@ class TestLogDecision:
         }))
         return json.loads(result)
 
-    def test_returns_action_id(self):
+    def test_returns_queued_status(self):
         client = _make_mock_client()
         result = self._call(client)
-        assert result["action_id"] == "act_test_123"
+        assert result["status"] == "queued"
 
-    def test_passes_reasoning(self):
+    def test_queues_reasoning(self):
+        import aegis.mcp_server as ms
         client = _make_mock_client()
         self._call(client, reasoning="chose path B")
-        assert client.log_decision.call_args.kwargs["reasoning"] == "chose path B"
+        _, _, kwargs = ms._bg_queue[0]
+        assert kwargs["reasoning"] == "chose path B"
 
-    def test_passes_confidence(self):
+    def test_queues_confidence(self):
+        import aegis.mcp_server as ms
         client = _make_mock_client()
         self._call(client, confidence=0.42)
-        assert client.log_decision.call_args.kwargs["confidence"] == 0.42
+        _, _, kwargs = ms._bg_queue[0]
+        assert kwargs["confidence"] == 0.42
 
     def test_parses_json_output(self):
+        import aegis.mcp_server as ms
         client = _make_mock_client()
         self._call(client, output_data='{"decision": "approve"}')
-        assert client.log_decision.call_args.kwargs["output_data"] == {"decision": "approve"}
+        _, _, kwargs = ms._bg_queue[0]
+        assert kwargs["output_data"] == {"decision": "approve"}
 
 
 # ---------------------------------------------------------------------------
@@ -250,23 +267,23 @@ class TestLogDecision:
 
 
 class TestLogObservation:
-    def test_returns_action_id(self):
+    def test_returns_queued_status(self):
         import aegis.mcp_server as ms
         client = _make_mock_client()
         ms._client = client
         result = json.loads(_run(ms.aegis_log_observation(
             input_data='{"sensor": "temp", "value": 42}',
         )))
-        assert result["action_id"] == "act_test_123"
+        assert result["status"] == "queued"
 
-    def test_passes_input_data(self):
+    def test_queues_input_data(self):
         import aegis.mcp_server as ms
         client = _make_mock_client()
         ms._client = client
         _run(ms.aegis_log_observation(input_data='{"x": 1}', output_data='{"y": 2}'))
-        call_kwargs = client.log_observation.call_args.kwargs
-        assert call_kwargs["input_data"] == {"x": 1}
-        assert call_kwargs["output_data"] == {"y": 2}
+        _, _, kwargs = ms._bg_queue[0]
+        assert kwargs["input_data"] == {"x": 1}
+        assert kwargs["output_data"] == {"y": 2}
 
 
 # ---------------------------------------------------------------------------
@@ -275,7 +292,7 @@ class TestLogObservation:
 
 
 class TestLogError:
-    def test_returns_action_id(self):
+    def test_returns_queued_status(self):
         import aegis.mcp_server as ms
         client = _make_mock_client()
         ms._client = client
@@ -285,14 +302,15 @@ class TestLogError:
             error="Connection refused",
             duration_ms=100,
         )))
-        assert result["action_id"] == "act_test_123"
+        assert result["status"] == "queued"
 
-    def test_passes_error_message(self):
+    def test_queues_error_message(self):
         import aegis.mcp_server as ms
         client = _make_mock_client()
         ms._client = client
         _run(ms.aegis_log_error(tool="t", input_data="{}", error="BOOM", duration_ms=0))
-        assert client.log_error.call_args.kwargs["error"] == "BOOM"
+        _, _, kwargs = ms._bg_queue[0]
+        assert kwargs["error"] == "BOOM"
 
 
 # ---------------------------------------------------------------------------

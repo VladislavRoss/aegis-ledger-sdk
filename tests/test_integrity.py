@@ -162,3 +162,41 @@ class TestVerifyIntegrity:
         result = client.verify_integrity(sample_size=1)
         assert result["valid"] == 0
         assert "act_err" in result["missing"]
+
+
+class TestCandidHashMaps:
+    """Verify analytics hash maps map Candid field hashes correctly."""
+
+    def test_session_completeness_map_covers_all_fields(self):
+        from aegis.integrity import SESSION_COMPLETENESS_HASH_MAP, map_candid_keys
+
+        raw = {
+            "_3142408401": "sess_1",
+            "_576569836": 10,
+            "_3211211751": 2,
+            "_1913441992": 0.2,
+            "_1812598860": 150,
+            "_4026534166": [("toolCall", 8)],
+        }
+        mapped = map_candid_keys(raw, SESSION_COMPLETENESS_HASH_MAP)
+        assert mapped["sessionId"] == "sess_1"
+        assert mapped["totalEntries"] == 10
+        assert mapped["errorCount"] == 2
+        assert mapped["errorRate"] == 0.2
+        assert mapped["avgDurationMs"] == 150
+        assert mapped["actionTypeDist"] == [("toolCall", 8)]
+
+    def test_org_stats_map_covers_all_fields(self):
+        from aegis.integrity import ORG_STATS_HASH_MAP, map_candid_keys
+
+        raw = {
+            "_576569836": 100,
+            "_3342846017": 5,
+            "_854450947": 30,
+            "_573940355": [("agent-1", 60)],
+        }
+        mapped = map_candid_keys(raw, ORG_STATS_HASH_MAP)
+        assert mapped["totalEntries"] == 100
+        assert mapped["totalSessions"] == 5
+        assert mapped["monthlyEntries"] == 30
+        assert mapped["topAgents"] == [("agent-1", 60)]

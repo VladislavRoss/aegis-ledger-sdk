@@ -96,6 +96,22 @@ SEQUENCE_HEAD_HASH_MAP: dict[str, str] = {
     "_317326703": "chainHash",
 }
 
+SESSION_COMPLETENESS_HASH_MAP: dict[str, str] = {
+    "_3142408401": "sessionId",
+    "_576569836": "totalEntries",
+    "_3211211751": "errorCount",
+    "_1913441992": "errorRate",
+    "_1812598860": "avgDurationMs",
+    "_4026534166": "actionTypeDist",
+}
+
+ORG_STATS_HASH_MAP: dict[str, str] = {
+    "_576569836": "totalEntries",
+    "_3342846017": "totalSessions",
+    "_854450947": "monthlyEntries",
+    "_573940355": "topAgents",
+}
+
 
 def map_candid_keys(raw: dict[str, Any], hash_map: dict[str, str]) -> dict[str, Any]:
     """Map Candid field-hash keys to human-readable names."""

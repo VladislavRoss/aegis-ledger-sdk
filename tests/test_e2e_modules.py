@@ -554,8 +554,8 @@ class TestLogBatchE2E:
         # Verify sequence numbers are monotonically increasing
         seqs = []
         for call in transport.call_update.call_args_list:
-            args = call[0][1]
-            seqs.append(args[4]["value"])  # sequence_number (Nat at index 4)
+            record = call[0][1][0]["value"]
+            seqs.append(record["sequenceNumber"])  # V2 Record format
         assert seqs == sorted(seqs)
 
     def test_log_batch_empty(self, tmp_pem):
@@ -578,11 +578,10 @@ class TestLogBatchE2E:
         client.log_batch(entries)
 
         # Verify chain hashes are all different (each includes previous)
-        # Index 20 = chainHash in the 24-arg Candid array
         chain_hashes = []
         for call in transport.call_update.call_args_list:
-            args = call[0][1]
-            chain_hashes.append(args[20]["value"])
+            record = call[0][1][0]["value"]
+            chain_hashes.append(record["chainHash"])
 
         assert len(chain_hashes) == 3
         assert len(set(chain_hashes)) == 3  # All unique (different payloads)

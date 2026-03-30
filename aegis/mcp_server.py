@@ -23,6 +23,7 @@ import json
 import logging
 import os
 import threading
+from collections import deque
 from pathlib import Path
 from typing import Any
 
@@ -36,6 +37,57 @@ _TOOL_TIMEOUT = 30
 # Chain state persistence (shared with flush hook)
 _CHAIN_STATE_PATH = Path.home() / ".aegis" / "agent_chain_state.json"
 _chain_lock = threading.Lock()
+
+# ---------------------------------------------------------------------------
+# Fire-and-forget background worker — entries are queued and submitted async
+# so MCP tools return instantly (<10ms) instead of blocking ~10s per ICP call.
+# ---------------------------------------------------------------------------
+
+_bg_queue: deque[tuple[str, tuple, dict]] = deque()
+_bg_thread: threading.Thread | None = None
+_bg_stop = threading.Event()
+_bg_started = threading.Event()
+
+
+def _bg_worker() -> None:
+    """Background daemon: drains _bg_queue and submits entries to ICP."""
+    _bg_started.set()
+    while not _bg_stop.is_set():
+        if not _bg_queue:
+            _bg_stop.wait(timeout=0.5)
+            continue
+        try:
+            method_name, args, kwargs = _bg_queue.popleft()
+        except IndexError:
+            continue
+        try:
+            if _client is None:
+                logger.warning("BG worker: client not initialized, re-queuing")
+                _bg_queue.appendleft((method_name, args, kwargs))
+                _bg_stop.wait(timeout=2.0)
+                continue
+            method = getattr(_client, method_name)
+            method(*args, **kwargs)
+            _persist_client_state()
+            logger.debug("BG submitted: %s (queue=%d)", method_name, len(_bg_queue))
+        except Exception:
+            logger.warning(
+                "BG submit failed for %s (entry spilled by SDK)",
+                method_name, exc_info=True,
+            )
+            _persist_client_state()
+
+
+def _ensure_bg_worker() -> None:
+    """Start the background worker thread if not already running."""
+    global _bg_thread
+    if _bg_thread is not None and _bg_thread.is_alive():
+        return
+    _bg_stop.clear()
+    _bg_started.clear()
+    _bg_thread = threading.Thread(target=_bg_worker, daemon=True, name="aegis-bg")
+    _bg_thread.start()
+    _bg_started.wait(timeout=2.0)
 
 # ---------------------------------------------------------------------------
 # Candid hash-key mapping (ic-py returns field hashes, not names)
@@ -354,6 +406,8 @@ async def aegis_log_tool_call(
 ) -> str:
     """Log a tool/API call to the tamper-evident Aegis Ledger.
 
+    Fire-and-forget: returns instantly, ICP submission happens in background.
+
     Args:
         tool: Name of the tool or API called (e.g. "web_search", "db.query").
         input_data: JSON string of the input arguments.
@@ -364,24 +418,20 @@ async def aegis_log_tool_call(
         confidence: Confidence score between 0.0 and 1.0.
 
     Returns:
-        The action_id assigned by the on-chain ledger.
+        JSON with queued status and queue depth.
     """
-    client = await _get_client()
-
-    def _call() -> str:
-        action_id = client.log_tool_call(
-            tool=tool,
-            input_data=_parse_json(input_data),
-            output_data=_parse_json(output_data),
-            duration_ms=duration_ms,
-            status=status,
-            reasoning=reasoning,
-            confidence=confidence,
-        )
-        _persist_client_state()
-        return json.dumps({"action_id": action_id})
-
-    return await _run_with_timeout(_call)
+    await _get_client()
+    _ensure_bg_worker()
+    _bg_queue.append(("log_tool_call", (), {
+        "tool": tool,
+        "input_data": _parse_json(input_data),
+        "output_data": _parse_json(output_data),
+        "duration_ms": duration_ms,
+        "status": status,
+        "reasoning": reasoning,
+        "confidence": confidence,
+    }))
+    return json.dumps({"status": "queued", "queue_depth": len(_bg_queue)})
 
 
 @mcp.tool()
@@ -394,6 +444,8 @@ async def aegis_log_decision(
 ) -> str:
     """Log a decision/reasoning step to the tamper-evident Aegis Ledger.
 
+    Fire-and-forget: returns instantly, ICP submission happens in background.
+
     Args:
         reasoning: The decision reasoning text.
         confidence: Confidence score between 0.0 and 1.0.
@@ -402,22 +454,18 @@ async def aegis_log_decision(
         duration_ms: Time spent on the decision in milliseconds.
 
     Returns:
-        The action_id assigned by the on-chain ledger.
+        JSON with queued status and queue depth.
     """
-    client = await _get_client()
-
-    def _call() -> str:
-        action_id = client.log_decision(
-            reasoning=reasoning,
-            confidence=confidence,
-            input_data=_parse_json(input_data),
-            output_data=_parse_json(output_data),
-            duration_ms=duration_ms,
-        )
-        _persist_client_state()
-        return json.dumps({"action_id": action_id})
-
-    return await _run_with_timeout(_call)
+    await _get_client()
+    _ensure_bg_worker()
+    _bg_queue.append(("log_decision", (), {
+        "reasoning": reasoning,
+        "confidence": confidence,
+        "input_data": _parse_json(input_data),
+        "output_data": _parse_json(output_data),
+        "duration_ms": duration_ms,
+    }))
+    return json.dumps({"status": "queued", "queue_depth": len(_bg_queue)})
 
 
 @mcp.tool()
@@ -428,26 +476,24 @@ async def aegis_log_observation(
 ) -> str:
     """Log an observation (sensor data, API response, etc.) to the Aegis Ledger.
 
+    Fire-and-forget: returns instantly, ICP submission happens in background.
+
     Args:
         input_data: JSON string of the observation data.
         output_data: JSON string of processed observation output.
         duration_ms: Time spent processing in milliseconds.
 
     Returns:
-        The action_id assigned by the on-chain ledger.
+        JSON with queued status and queue depth.
     """
-    client = await _get_client()
-
-    def _call() -> str:
-        action_id = client.log_observation(
-            input_data=_parse_json(input_data),
-            output_data=_parse_json(output_data),
-            duration_ms=duration_ms,
-        )
-        _persist_client_state()
-        return json.dumps({"action_id": action_id})
-
-    return await _run_with_timeout(_call)
+    await _get_client()
+    _ensure_bg_worker()
+    _bg_queue.append(("log_observation", (), {
+        "input_data": _parse_json(input_data),
+        "output_data": _parse_json(output_data),
+        "duration_ms": duration_ms,
+    }))
+    return json.dumps({"status": "queued", "queue_depth": len(_bg_queue)})
 
 
 @mcp.tool()
@@ -459,6 +505,8 @@ async def aegis_log_error(
 ) -> str:
     """Log an error encountered during agent execution to the Aegis Ledger.
 
+    Fire-and-forget: returns instantly, ICP submission happens in background.
+
     Args:
         tool: Name of the tool that failed.
         input_data: JSON string of the input that caused the error.
@@ -466,21 +514,17 @@ async def aegis_log_error(
         duration_ms: Time elapsed before the error in milliseconds.
 
     Returns:
-        The action_id assigned by the on-chain ledger.
+        JSON with queued status and queue depth.
     """
-    client = await _get_client()
-
-    def _call() -> str:
-        action_id = client.log_error(
-            tool=tool,
-            input_data=_parse_json(input_data),
-            error=error,
-            duration_ms=duration_ms,
-        )
-        _persist_client_state()
-        return json.dumps({"action_id": action_id})
-
-    return await _run_with_timeout(_call)
+    await _get_client()
+    _ensure_bg_worker()
+    _bg_queue.append(("log_error", (), {
+        "tool": tool,
+        "input_data": _parse_json(input_data),
+        "error": error,
+        "duration_ms": duration_ms,
+    }))
+    return json.dumps({"status": "queued", "queue_depth": len(_bg_queue)})
 
 
 @mcp.tool()

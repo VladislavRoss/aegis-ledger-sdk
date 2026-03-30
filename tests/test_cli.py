@@ -410,3 +410,24 @@ class TestCliListSessions:
         result = _run_cli("list-sessions", "invalid-canister")
         assert result.returncode == 1
         assert "Error:" in result.stdout
+
+
+class TestCliSessionAnalytics:
+    """Tests for aegis session-analytics command."""
+
+    def test_session_analytics_in_help(self):
+        result = _run_cli("--help")
+        assert "session-analytics" in result.stdout
+
+    def test_session_analytics_no_args_exits_1(self):
+        result = _run_cli("session-analytics")
+        assert result.returncode == 1
+        assert "Usage:" in result.stdout
+
+
+class TestCliOrgStats:
+    """Tests for aegis org-stats command."""
+
+    def test_org_stats_in_help(self):
+        result = _run_cli("--help")
+        assert "org-stats" in result.stdout

@@ -2,6 +2,16 @@
 
 All notable changes to `aegis-ledger-sdk` are documented here.
 
+## [0.2.11] — 2026-03-30
+
+### Added
+- **KYA (Know Your Agent) SDK bindings** — `register_agent`, `update_agent_profile`, `get_agent_facts` via canister_ops mixin
+- **`canister_ops.py` mixin** — extracted canister operations from client.py for cleaner separation
+- 5 new KYA integration tests
+
+### Changed
+- `client.py` refactored to use `canister_ops` mixin (no API changes)
+
 ## [0.2.6] — 2026-03-27
 
 ### Added

@@ -15,6 +15,8 @@ from __future__ import annotations
 import sys
 
 from aegis.integrity import HEALTH_HASH_MAP as _HEALTH_HASH_MAP
+from aegis.integrity import ORG_STATS_HASH_MAP as _ORG_STATS_HASH_MAP
+from aegis.integrity import SESSION_COMPLETENESS_HASH_MAP as _SC_HASH_MAP
 from aegis.integrity import VERIFY_HASH_MAP as _VERIFY_HASH_MAP
 from aegis.integrity import map_candid_keys as _map_candid_keys
 
@@ -90,6 +92,10 @@ def main() -> None:
     elif command == "purge-session":
         from aegis.cli_selfservice import cmd_purge_session
         cmd_purge_session(args[1:])
+    elif command == "session-analytics":
+        _cmd_session_analytics(args[1:])
+    elif command == "org-stats":
+        _cmd_org_stats(args[1:])
     elif command == "version":
         from aegis import __version__
 
@@ -122,6 +128,8 @@ Commands:
   delete-key <key_id>               Permanently delete a revoked key
   update-key-desc <id> <desc>       Update key description (max 256 chars)
   purge-session <sid> [--batch-limit N]  Purge session entries (owner/admin)
+  session-analytics <sid>           Session error rate, duration, action types
+  org-stats [canister_id]           Aggregated org statistics (entries, agents)
   version                           Print SDK version
 
 Algorithms (keygen/init):
@@ -644,6 +652,60 @@ def _cmd_list_sessions(args: list[str]) -> None:
     except Exception as e:
         print(f"Error: {e}")
         sys.exit(1)
+
+def _cmd_session_analytics(args: list[str]) -> None:
+    """Show analytics for a session."""
+    if not args:
+        print("Usage: aegis session-analytics <session-id> [canister-id]")
+        sys.exit(1)
+    session_id = args[0]
+    canister_id = args[1] if len(args) > 1 else None
+    try:
+        from ic.candid import Types  # type: ignore[import-untyped]
+
+        transport, _ = _transport_from_config(canister_id)
+        args_c = [{"type": Types.Text, "value": session_id}]
+        raw = transport.call_query("getSessionCompleteness", args_c)
+        result = _map_candid_keys(raw, _SC_HASH_MAP) if isinstance(raw, dict) else raw
+        print(f"Session: {session_id}")
+        print(f"  Entries:      {result.get('totalEntries', '?')}")
+        print(f"  Errors:       {result.get('errorCount', '?')}")
+        er = result.get("errorRate")
+        if isinstance(er, (int, float)):
+            print(f"  Error Rate:   {er:.1%}")
+        else:
+            print(f"  Error Rate:   {er}")
+        print(f"  Avg Duration: {result.get('avgDurationMs', '?')} ms")
+        dist = result.get("actionTypeDist", [])
+        if dist:
+            print("  Action Types:")
+            for name, count in dist:
+                print(f"    {name}: {count}")
+    except Exception as e:
+        print(f"Error: {e}")
+        sys.exit(1)
+
+
+def _cmd_org_stats(args: list[str]) -> None:
+    """Show aggregated org statistics."""
+    canister_id = args[0] if args else None
+    try:
+        transport, _ = _transport_from_config(canister_id)
+        raw = transport.call_query("getOrgStats", [])
+        result = _map_candid_keys(raw, _ORG_STATS_HASH_MAP) if isinstance(raw, dict) else raw
+        print("Org Statistics:")
+        print(f"  Total Entries:   {result.get('totalEntries', '?')}")
+        print(f"  Total Sessions:  {result.get('totalSessions', '?')}")
+        print(f"  Monthly Entries: {result.get('monthlyEntries', '?')}")
+        agents = result.get("topAgents", [])
+        if agents:
+            print("  Top Agents:")
+            for name, count in agents:
+                print(f"    {name}: {count}")
+    except Exception as e:
+        print(f"Error: {e}")
+        sys.exit(1)
+
 
 def _cmd_doctor(args: list[str]) -> None:
     """Run SDK health diagnostics."""

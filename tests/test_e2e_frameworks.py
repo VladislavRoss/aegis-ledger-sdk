@@ -216,8 +216,8 @@ class TestPQE2EClientWithSchemes:
         client, transport = _make_client(tmp_pem)
         client.log_tool_call(tool="pq_test", input_data={}, output_data={}, duration_ms=0)
 
-        args = transport.call_update.call_args[0][1]
-        sig = args[19]["value"]  # payloadSignature
+        record = transport.call_update.call_args[0][1][0]["value"]
+        sig = record["payloadSignature"]
         assert sig.startswith("ed25519:"), f"Default must be Ed25519, got: {sig[:20]}"
 
     def test_client_signature_changes_with_different_payloads(self, tmp_pem):
@@ -225,10 +225,10 @@ class TestPQE2EClientWithSchemes:
         client, transport = _make_client(tmp_pem)
 
         client.log_tool_call(tool="tool_a", input_data={"x": 1}, output_data={}, duration_ms=0)
-        sig_1 = transport.call_update.call_args[0][1][19]["value"]
+        sig_1 = transport.call_update.call_args[0][1][0]["value"]["payloadSignature"]
 
         client.log_tool_call(tool="tool_b", input_data={"x": 2}, output_data={}, duration_ms=0)
-        sig_2 = transport.call_update.call_args[0][1][19]["value"]
+        sig_2 = transport.call_update.call_args[0][1][0]["value"]["payloadSignature"]
 
         assert sig_1 != sig_2, "Different payloads must produce different signatures"
 
@@ -240,8 +240,8 @@ class TestPQE2EClientWithSchemes:
         client1.log_tool_call(tool="tool_x", input_data={"val": "A"}, output_data={}, duration_ms=0)
         client2.log_tool_call(tool="tool_x", input_data={"val": "B"}, output_data={}, duration_ms=0)
 
-        hash_1 = t1.call_update.call_args[0][1][20]["value"]
-        hash_2 = t2.call_update.call_args[0][1][20]["value"]
+        hash_1 = t1.call_update.call_args[0][1][0]["value"]["chainHash"]
+        hash_2 = t2.call_update.call_args[0][1][0]["value"]["chainHash"]
 
         assert hash_1 != hash_2, "Different payloads must produce different chain hashes"
 
@@ -267,8 +267,8 @@ class TestFrameworkLangChainE2E:
         handler.on_tool_end("result text", run_id=run_id, name="search")
 
         assert transport.call_update.called
-        args = transport.call_update.call_args[0][1]
-        assert args[5]["value"] == {"toolCall": None}
+        record = transport.call_update.call_args[0][1][0]["value"]
+        assert record["actionType"] == {"toolCall": None}
 
     def test_langchain_llm_lifecycle(self, tmp_pem):
         """LangChain E2E: on_llm_start → on_llm_end logs decision."""
@@ -292,8 +292,8 @@ class TestFrameworkLangChainE2E:
         handler.on_llm_end(response, run_id=run_id)
 
         assert transport.call_update.called
-        args = transport.call_update.call_args[0][1]
-        assert args[5]["value"] == {"decision": None}
+        record = transport.call_update.call_args[0][1][0]["value"]
+        assert record["actionType"] == {"decision": None}
 
     def test_langchain_chain_lifecycle(self, tmp_pem):
         """LangChain E2E: on_chain_start/end logs observation (log_chain_steps=True)."""
@@ -309,8 +309,8 @@ class TestFrameworkLangChainE2E:
         handler.on_chain_end({"output": "result"}, run_id=run_id)
 
         assert transport.call_update.called
-        args = transport.call_update.call_args[0][1]
-        assert args[5]["value"] == {"observation": None}
+        record = transport.call_update.call_args[0][1][0]["value"]
+        assert record["actionType"] == {"observation": None}
 
     def test_langchain_error_logging(self, tmp_pem):
         """LangChain E2E: on_llm_error logs error action."""
@@ -371,8 +371,8 @@ class TestFrameworkCrewAIE2E:
         callback(action)
 
         assert transport.call_update.called
-        args = transport.call_update.call_args[0][1]
-        assert args[5]["value"] == {"toolCall": None}
+        record = transport.call_update.call_args[0][1][0]["value"]
+        assert record["actionType"] == {"toolCall": None}
 
     def test_crewai_task_output(self, tmp_pem):
         """CrewAI E2E: TaskOutput (task completion) logs decision."""
@@ -391,8 +391,8 @@ class TestFrameworkCrewAIE2E:
         callback(task_output)
 
         assert transport.call_update.called
-        args = transport.call_update.call_args[0][1]
-        assert args[5]["value"] == {"decision": None}
+        record = transport.call_update.call_args[0][1][0]["value"]
+        assert record["actionType"] == {"decision": None}
 
     def test_crewai_unknown_step(self, tmp_pem):
         """CrewAI E2E: Unknown step type logs observation."""
@@ -404,8 +404,8 @@ class TestFrameworkCrewAIE2E:
         callback("some unknown output")
 
         assert transport.call_update.called
-        args = transport.call_update.call_args[0][1]
-        assert args[5]["value"] == {"observation": None}
+        record = transport.call_update.call_args[0][1][0]["value"]
+        assert record["actionType"] == {"observation": None}
 
     def test_crewai_error_logging(self, tmp_pem):
         """CrewAI E2E: log_error logs error action."""
@@ -432,8 +432,8 @@ class TestFrameworkOpenAIAgentsE2E:
             assert trace_id.startswith("oai_")
 
         assert transport.call_update.called
-        args = transport.call_update.call_args[0][1]
-        assert args[5]["value"] == {"decision": None}
+        record = transport.call_update.call_args[0][1][0]["value"]
+        assert record["actionType"] == {"decision": None}
 
     def test_openai_trace_error_handling(self, tmp_pem):
         """OpenAI Agents E2E: trace() logs error on exception."""
@@ -460,8 +460,8 @@ class TestFrameworkOpenAIAgentsE2E:
         )
 
         assert transport.call_update.called
-        args = transport.call_update.call_args[0][1]
-        assert args[5]["value"] == {"toolCall": None}
+        record = transport.call_update.call_args[0][1][0]["value"]
+        assert record["actionType"] == {"toolCall": None}
 
     def test_openai_handoff_and_guardrail(self, tmp_pem):
         """OpenAI Agents E2E: log_handoff + log_guardrail log decision/observation."""
@@ -472,8 +472,8 @@ class TestFrameworkOpenAIAgentsE2E:
 
         tracer.log_handoff("agent_a", "agent_b", reason="escalation")
         assert transport.call_update.call_count == 1
-        args = transport.call_update.call_args[0][1]
-        assert args[5]["value"] == {"decision": None}
+        record = transport.call_update.call_args[0][1][0]["value"]
+        assert record["actionType"] == {"decision": None}
 
         tracer.log_guardrail("content_filter", passed=True, details="clean")
         assert transport.call_update.call_count == 2
@@ -491,8 +491,8 @@ class TestFrameworkAutoGenE2E:
 
         hook.on_message_sent(sender="user", receiver="assistant", message="Hello")
         assert transport.call_update.call_count == 1
-        args = transport.call_update.call_args[0][1]
-        assert args[5]["value"] == {"observation": None}
+        record = transport.call_update.call_args[0][1][0]["value"]
+        assert record["actionType"] == {"observation": None}
 
         hook.on_message_received(sender="assistant", receiver="user", message={"content": "Hi"})
         assert transport.call_update.call_count == 2
@@ -508,8 +508,8 @@ class TestFrameworkAutoGenE2E:
         hook.on_tool_result(tool_name="calculator", result="2", caller="assistant")
 
         assert transport.call_update.called
-        args = transport.call_update.call_args[0][1]
-        assert args[5]["value"] == {"toolCall": None}
+        record = transport.call_update.call_args[0][1][0]["value"]
+        assert record["actionType"] == {"toolCall": None}
 
     def test_autogen_completion(self, tmp_pem):
         """AutoGen E2E: on_completion logs decision with agent_name in reasoning."""
@@ -521,8 +521,8 @@ class TestFrameworkAutoGenE2E:
         hook.on_completion(agent_name="assistant", summary="Task done", chat_history_length=5)
 
         assert transport.call_update.called
-        args = transport.call_update.call_args[0][1]
-        assert args[5]["value"] == {"decision": None}
+        record = transport.call_update.call_args[0][1][0]["value"]
+        assert record["actionType"] == {"decision": None}
 
     def test_autogen_error_logging(self, tmp_pem):
         """AutoGen E2E: log_error logs error action."""

@@ -37,11 +37,13 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 from aegis import __version__  # single source of truth in __init__.py
+from aegis.canister_ops import CanisterOpsMixin
 from aegis.config import get_client_config, get_default_scheme, get_signing_key_path, load_config
 from aegis.crypto import (
     canonical_json,
     compute_chain_hash,
     create_scheme,
+    extract_otel_context,
     load_mldsa65_private_key,
     load_private_key,
     load_slhdsa128s_private_key,
@@ -50,7 +52,11 @@ from aegis.crypto import (
     truncate_preview,
 )
 from aegis.errors import translate_error
-from aegis.transport import CanisterTransport, TransportConfig, _build_add_ledger_entry_args
+from aegis.transport import (
+    CanisterTransport,
+    TransportConfig,
+    _build_add_ledger_entry_v2_args,
+)
 from aegis.types import (
     ActionContext,
     ActionPayload,
@@ -64,7 +70,8 @@ logger = logging.getLogger("aegis")
 
 F = TypeVar("F", bound=Callable[..., Any])
 
-class AegisClient:
+
+class AegisClient(CanisterOpsMixin):
     """
     Client for logging AI agent actions to the Aegis Ledger.
 
@@ -89,46 +96,7 @@ class AegisClient:
         signing_key_path: str | Path | None = None,
         metadata: dict[str, str] | None = None,
     ):
-        """
-        Initialize the Aegis client.
-
-        Args:
-            canister_id: The ICP canister ID hosting the Aegis ledger.
-            api_key_id: The API key ID obtained from the Aegis dashboard.
-            private_key_path: Path to the Ed25519 PEM private key file.
-            agent_id: Unique identifier for this agent (must match the
-                      prefix registered with the API key).
-            org_id: The ICP Principal of the organisation owning this key.
-                    Defaults to the anonymous principal ("aaaaa-aa").
-            session_id: Optional session ID. Auto-generated if not provided.
-                        Use a stable session_id to group related actions
-                        into a single trace.
-            environment: Runtime environment metadata. Auto-detected if
-                         not provided.
-            network: ICP network URL. Defaults to mainnet.
-            fail_open: If True, agent execution continues even if logging
-                       fails (entries spill to disk). If False, logging
-                       failures raise exceptions. Default True because
-                       agent execution should never be blocked by
-                       observability infrastructure.
-            redact_pii: If True (default), automatically detect and redact
-                        PII patterns (email, phone, SSN, AHV, credit card,
-                        IP address) in input/output data and reasoning
-                        before hashing. Redacted values are replaced with
-                        SHA-256 hashes. Required for DPA Art. 28 compliance.
-            signature_scheme: Cryptographic signature algorithm to use.
-                              Supported: "ed25519", "ml-dsa-65", "ml-dsa-87",
-                              "slh-dsa-128s", "hybrid". Defaults to
-                              ``~/.aegis/config.toml`` [signing] default_scheme,
-                              or "ed25519" if not configured. PQ algorithms
-                              require pqcrypto + signing_key_path.
-            signing_key_path: Path to ML-DSA-65 secret key file (raw bytes).
-                              Required when signature_scheme is "ml-dsa-65"
-                              or "hybrid". Can be set in config.toml
-                              [signing] signing_key_path.
-            metadata: Default metadata attached to every log entry. Can be
-                      overridden per-call.
-        """
+        """Initialize the Aegis client for logging AI agent actions."""
         # --- Input validation ---
         if not canister_id or not canister_id.strip():
             raise ValueError("canister_id must not be empty")
@@ -249,23 +217,7 @@ class AegisClient:
         config_path: str | Path | None = None,
         **overrides: Any,
     ) -> AegisClient:
-        """Create an AegisClient from ``~/.aegis/config.toml``.
-
-        After running ``aegis init``, this is the simplest way to get started::
-
-            from aegis import AegisClient
-            client = AegisClient.from_config()
-
-        Args:
-            agent_id: Override the agent_id from config (optional).
-            session_id: Override the session_id (optional, auto-generated).
-            config_path: Custom path to config.toml (optional).
-            **overrides: Any other AegisClient constructor parameter.
-
-        Raises:
-            FileNotFoundError: If config.toml does not exist.
-            ValueError: If required fields are missing from config.
-        """
+        """Create AegisClient from ``~/.aegis/config.toml`` (after ``aegis init``)."""
         from pathlib import Path as _Path
 
         cfg_path = _Path(config_path) if config_path else None
@@ -424,6 +376,52 @@ class AegisClient:
             confidence=0.0,
             metadata=metadata,
         )
+
+    def attest_human_review(
+        self,
+        action_id: str,
+        decision: str,
+        reasoning: str = "",
+    ) -> dict:
+        """Attest a human review of an agent action (EU AI Act Art. 14).
+
+        Args:
+            action_id: The action_id of the entry being reviewed.
+            decision: One of "approved", "rejected", "escalated".
+            reasoning: Free-text explanation (max 2048 chars).
+
+        Returns:
+            The attestation record from the canister.
+        """
+        if decision not in ("approved", "rejected", "escalated"):
+            raise ValueError(
+                f"Invalid decision {decision!r}. Must be: approved, rejected, escalated"
+            )
+        try:
+            from ic.candid import Types  # type: ignore[import-untyped]
+        except ImportError as e:
+            raise ImportError("ic-py required for attest_human_review") from e
+
+        args = [
+            {"type": Types.Text, "value": action_id},
+            {"type": Types.Text, "value": decision},
+            {"type": Types.Text, "value": reasoning[:2048]},
+        ]
+        return self._transport.call_update("attestHumanReview", args)
+
+    def get_session_completeness(self, session_id: str) -> dict:
+        """Get analytics for a session (error rate, duration, action type distribution)."""
+        try:
+            from ic.candid import Types  # type: ignore[import-untyped]
+        except ImportError as e:
+            raise ImportError("ic-py required for get_session_completeness") from e
+        args = [{"type": Types.Text, "value": session_id}]
+        return self._transport.call_query("getSessionCompleteness", args)
+
+    def get_org_stats(self) -> dict:
+        """Get aggregated org statistics (entries, sessions, monthly count, top agents)."""
+        return self._transport.call_query("getOrgStats", [])
+
 
     # ------------------------------------------------------------------
     # PUBLIC API: The @trace decorator
@@ -657,44 +655,7 @@ class AegisClient:
             results.append(action_id)
         return results
 
-    # ------------------------------------------------------------------
-    # PUBLIC API: Self-service key & session management
-    # ------------------------------------------------------------------
-
-    def _api_key_map(self, raw: object) -> dict:
-        from .integrity import API_KEY_HASH_MAP, map_candid_keys
-        return map_candid_keys(raw, API_KEY_HASH_MAP) if isinstance(raw, dict) else raw
-    def reactivate_api_key(self, key_id: str) -> dict:
-        """Reactivate a revoked API key. Owner only."""
-        from ic.candid import Types
-        raw = self._transport.call_update(
-            "reactivateApiKey", [{"type": Types.Text, "value": key_id}])
-        return self._api_key_map(raw)
-
-    def delete_api_key(self, key_id: str) -> None:
-        """Permanently delete a revoked API key. Owner only."""
-        from ic.candid import Types
-        self._transport.call_update("deleteApiKey", [{"type": Types.Text, "value": key_id}])
-
-    def update_api_key_description(self, key_id: str, description: str) -> dict:
-        """Update the description of an API key. Owner only, max 256 chars."""
-        from ic.candid import Types
-        raw = self._transport.call_update(
-            "updateApiKeyDescription",
-            [{"type": Types.Text, "value": key_id}, {"type": Types.Text, "value": description}],
-        )
-        return self._api_key_map(raw)
-
-    def purge_session(self, session_id: str, batch_limit: int | None = None) -> int:
-        """Purge all entries from a session. Owner + Admin."""
-        from ic.candid import Types
-        args = [{"type": Types.Text, "value": session_id}]
-        if batch_limit is not None:
-            args.append({"type": Types.Opt(Types.Nat), "value": [batch_limit]})
-        else:
-            args.append({"type": Types.Opt(Types.Nat), "value": []})
-        result = self._transport.call_update("purgeSession", args)
-        return int(result) if result is not None else 0
+    # Self-service + KYA methods → canister_ops.py (CanisterOpsMixin)
 
     def close(self) -> None:
         """Drain spill buffer and release resources."""
@@ -727,6 +688,7 @@ class AegisClient:
         parent_id: str,
     ) -> LogEntry:
         """Build a LogEntry from validated, PII-redacted inputs (called inside lock)."""
+        otel_trace_id, otel_span_id, otel_parent_span_id = extract_otel_context()
         return LogEntry(
             agent_id=self._agent_id,
             session_id=self._session_id,
@@ -751,6 +713,9 @@ class AegisClient:
             client_timestamp_ms=now_ms,
             sdk_version=__version__,
             api_key_id=self._api_key_id,
+            otel_trace_id=otel_trace_id,
+            otel_span_id=otel_span_id,
+            otel_parent_span_id=otel_parent_span_id,
         )
 
     def _build_candid_args(
@@ -761,8 +726,12 @@ class AegisClient:
         action_id: str,
         payload_bytes: bytes,
     ) -> list[Any]:
-        """Build the 24 Candid positional arguments for addLedgerEntry."""
-        return _build_add_ledger_entry_args(
+        """Build a single Candid Record argument for addLedgerEntryV2."""
+        metadata_json = ""
+        if entry.metadata:
+            import json as _json
+            metadata_json = _json.dumps(entry.metadata, sort_keys=True)
+        return _build_add_ledger_entry_v2_args(
             action_id=action_id,
             org_id=self._org_id,
             agent_id=entry.agent_id,
@@ -787,6 +756,13 @@ class AegisClient:
             previous_chain_hash=previous_chain_hash,
             payload_hex=payload_bytes.hex(),
             key_id=self._api_key_id,
+            metadata=metadata_json,
+            sdk_version=entry.sdk_version,
+            otel_trace_id=entry.otel_trace_id,
+            otel_span_id=entry.otel_span_id,
+            otel_parent_span_id=entry.otel_parent_span_id,
+            cost_usd=entry.cost_usd,
+            token_count=entry.token_count,
         )
 
     def _log(
@@ -861,7 +837,7 @@ class AegisClient:
             )
 
             try:
-                result = self._transport.call_update("addLedgerEntry", candid_args)
+                result = self._transport.call_update("addLedgerEntryV2", candid_args)
                 action_id = (
                     result.get("actionId")
                     or result.get("_3776271665")
@@ -888,7 +864,7 @@ class AegisClient:
                         entry, chain_hash, previous_chain_hash, local_action_id, payload_bytes,
                     )
                     try:
-                        result = self._transport.call_update("addLedgerEntry", candid_args)
+                        result = self._transport.call_update("addLedgerEntryV2", candid_args)
                         action_id = (
                             result.get("actionId") or result.get("_3776271665") or local_action_id
                         )
@@ -936,13 +912,7 @@ class AegisClient:
     # ------------------------------------------------------------------
 
     def _derive_org_id(self) -> str:
-        """
-        Derive the ICP principal from the loaded Ed25519 private key.
-
-        Re-serializes the already-loaded key to PEM in memory (avoids
-        TOCTOU issues from re-reading the PEM file on disk).
-        Falls back to 'aaaaa-aa' if ic-py is unavailable.
-        """
+        """Derive ICP principal from Ed25519 key. Fallback: 'aaaaa-aa'."""
         try:
             from cryptography.hazmat.primitives.serialization import (
                 Encoding as _Enc,
@@ -966,11 +936,7 @@ class AegisClient:
 
     @staticmethod
     def _detect_environment() -> Environment:
-        """
-        Auto-detect the agent's runtime environment.
-
-        Sniffs for known frameworks by checking installed packages.
-        """
+        """Auto-detect runtime environment by sniffing installed packages."""
         frameworks: list[str] = []
         versions: list[str] = []
         model_provider = ""

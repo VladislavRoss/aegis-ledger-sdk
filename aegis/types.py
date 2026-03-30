@@ -84,6 +84,11 @@ class LogEntry:
     client_timestamp_ms: int = 0
     sdk_version: str = ""
     api_key_id: str = ""
+    otel_trace_id: str = ""
+    otel_span_id: str = ""
+    otel_parent_span_id: str = ""
+    cost_usd: float = 0.0
+    token_count: int = 0
     payload_signature: str = ""
 
     def to_signable_dict(self) -> dict:
@@ -111,6 +116,7 @@ class LogEntry:
                 "decision_reasoning": self.context.decision_reasoning,
                 "parent_action_id": self.context.parent_action_id,
             },
+            "cost_usd": self.cost_usd,
             "environment": {
                 "framework": self.environment.framework,
                 "framework_version": self.environment.framework_version,
@@ -119,9 +125,13 @@ class LogEntry:
                 "runtime": self.environment.runtime,
             },
             "metadata": dict(sorted(self.metadata.items())),
+            "otel_parent_span_id": self.otel_parent_span_id,
+            "otel_span_id": self.otel_span_id,
+            "otel_trace_id": self.otel_trace_id,
             "sdk_version": self.sdk_version,
             "sequence_number": self.sequence_number,
             "session_id": self.session_id,
+            "token_count": self.token_count,
         }
 
     def to_submission_dict(self) -> dict:

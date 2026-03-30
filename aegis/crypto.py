@@ -251,3 +251,26 @@ def truncate_preview(obj: object, max_length: int = 200) -> str:
         return serialized
 
     return serialized[: max_length - 3] + "..."
+
+
+def extract_otel_context() -> tuple[str, str, str]:
+    """Extract trace_id, span_id, parent_span_id from active OTel span.
+
+    Returns ("", "", "") if opentelemetry is not installed or no span.
+    Soft dependency — never raises.
+    """
+    try:
+        from opentelemetry import trace  # type: ignore[import-untyped]
+
+        span = trace.get_current_span()
+        ctx = span.get_span_context()
+        if ctx and ctx.trace_id != 0:
+            trace_id = format(ctx.trace_id, "032x")
+            span_id = format(ctx.span_id, "016x")
+            parent_id = ""
+            if hasattr(span, "parent") and span.parent is not None:
+                parent_id = format(span.parent.span_id, "016x")
+            return trace_id, span_id, parent_id
+    except Exception:
+        pass
+    return "", "", ""

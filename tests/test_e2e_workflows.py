@@ -139,23 +139,23 @@ class TestW02AgentIntegration:
         calls = transport.call_update.call_args_list
 
         # Erster Entry: previousChainHash = ""
-        first_args = calls[0][0][1]
-        assert first_args[21]["value"] == "", "First entry previousChainHash must be empty"
+        first_rec = calls[0][0][1][0]["value"]
+        assert first_rec["previousChainHash"] == "", "First entry previousChainHash must be empty"
 
         # Zweiter Entry: previousChainHash = chainHash des ersten
-        first_chain_hash = first_args[20]["value"]
-        second_args = calls[1][0][1]
-        assert second_args[21]["value"] == first_chain_hash, "Chain linkage broken"
+        first_chain_hash = first_rec["chainHash"]
+        second_rec = calls[1][0][1][0]["value"]
+        assert second_rec["previousChainHash"] == first_chain_hash, "Chain linkage broken"
 
         # Dritter Entry: previousChainHash = chainHash des zweiten
-        second_chain_hash = second_args[20]["value"]
-        third_args = calls[2][0][1]
-        assert third_args[21]["value"] == second_chain_hash, "Chain linkage broken"
+        second_chain_hash = second_rec["chainHash"]
+        third_rec = calls[2][0][1][0]["value"]
+        assert third_rec["previousChainHash"] == second_chain_hash, "Chain linkage broken"
 
         # Step 9: Sequenz monoton steigend
-        seq1 = first_args[4]["value"]
-        seq2 = second_args[4]["value"]
-        seq3 = third_args[4]["value"]
+        seq1 = first_rec["sequenceNumber"]
+        seq2 = second_rec["sequenceNumber"]
+        seq3 = third_rec["sequenceNumber"]
         assert seq1 < seq2 < seq3, f"Sequence not monotonic: {seq1}, {seq2}, {seq3}"
 
     def test_signature_present_and_prefixed(self, tmp_pem):
@@ -163,8 +163,8 @@ class TestW02AgentIntegration:
         client, transport = _make_client(tmp_pem)
         client.log_tool_call(tool="search", input_data={}, output_data={}, duration_ms=0)
 
-        args = transport.call_update.call_args[0][1]
-        sig = args[19]["value"]  # Position 19 = payloadSignature
+        rec = transport.call_update.call_args[0][1][0]["value"]
+        sig = rec["payloadSignature"]
         assert sig.startswith("ed25519:"), f"Signature must have ed25519 prefix, got: {sig[:20]}"
         assert len(sig) > 10, "Signature too short"
 
@@ -178,8 +178,8 @@ class TestW02AgentIntegration:
             duration_ms=100,
         )
 
-        args = transport.call_update.call_args[0][1]
-        payload_hex = args[22]["value"]  # Position 22 = payloadHex
+        rec = transport.call_update.call_args[0][1][0]["value"]
+        payload_hex = rec["payloadHex"]
         assert len(payload_hex) > 0
         # Decode und prüfe JSON-Sortierung
         payload_bytes = bytes.fromhex(payload_hex)
@@ -199,10 +199,9 @@ class TestW02AgentIntegration:
             duration_ms=10,
         )
 
-        args = transport.call_update.call_args[0][1]
-        # Previews (pos 9, 10) müssen leer sein
-        assert args[9]["value"] == "", "inputPreview must be empty (PII protection)"
-        assert args[10]["value"] == "", "outputPreview must be empty (PII protection)"
+        rec = transport.call_update.call_args[0][1][0]["value"]
+        assert rec["inputPreview"] == "", "inputPreview must be empty (PII protection)"
+        assert rec["outputPreview"] == "", "outputPreview must be empty (PII protection)"
 
     def test_chain_hash_deterministic(self, tmp_pem):
         """W-02: Gleiche Payload → gleicher Hash."""
@@ -229,8 +228,8 @@ class TestW02AgentIntegration:
             {"error": None},
         ]
         for i, expected in enumerate(expected_types):
-            args = transport.call_update.call_args_list[i][0][1]
-            assert args[5]["value"] == expected, f"ActionType mismatch at call {i}"
+            rec = transport.call_update.call_args_list[i][0][1][0]["value"]
+            assert rec["actionType"] == expected, f"ActionType mismatch at call {i}"
 
     def test_trace_decorator_captures_io(self, tmp_pem):
         """W-02: @trace Decorator muss I/O hashen und Ergebnis durchreichen."""
@@ -243,10 +242,10 @@ class TestW02AgentIntegration:
         result = my_func(21)
         assert result == {"doubled": 42}
 
-        args = transport.call_update.call_args[0][1]
-        assert args[6]["value"] == "traced_func"
-        assert args[7]["value"].startswith("sha256:")  # input_hash
-        assert args[8]["value"].startswith("sha256:")  # output_hash
+        rec = transport.call_update.call_args[0][1][0]["value"]
+        assert rec["tool"] == "traced_func"
+        assert rec["inputHash"].startswith("sha256:")
+        assert rec["outputHash"].startswith("sha256:")
 
 
 # ============================================================================
@@ -327,7 +326,7 @@ class TestW05KeyRotation:
         # Phase 1: Log mit Key 1
         client1, transport1 = _make_client(tmp_pem, session_id="rotation-session")
         client1.log_tool_call(tool="before_rotation", input_data={}, output_data={}, duration_ms=0)
-        first_chain_hash = transport1.call_update.call_args[0][1][20]["value"]
+        first_chain_hash = transport1.call_update.call_args[0][1][0]["value"]["chainHash"]
 
         # Speichere chain_heads State
         chain_head = client1._chain_heads.get("rotation-session")
@@ -345,8 +344,8 @@ class TestW05KeyRotation:
         client2.log_tool_call(tool="after_rotation", input_data={}, output_data={}, duration_ms=0)
 
         # Phase 3: Prüfe Kontinuität
-        second_args = transport2.call_update.call_args[0][1]
-        assert second_args[21]["value"] == first_chain_hash, \
+        second_rec = transport2.call_update.call_args[0][1][0]["value"]
+        assert second_rec["previousChainHash"] == first_chain_hash, \
             "previousChainHash after rotation must equal last chainHash before rotation"
 
     def test_different_keys_produce_different_signatures(self, tmp_pem, tmp_pem_2):
@@ -458,10 +457,10 @@ class TestW07MultiAgentMultiSession:
         for i in range(3):
             c, t = _make_client(tmp_pem, session_id=f"org_session_{i}")
             c.log_tool_call(tool="org_test", input_data={}, output_data={}, duration_ms=0)
-            args = t.call_update.call_args[0][1]
+            rec = t.call_update.call_args[0][1][0]["value"]
             from aegis.transport import _principal_text_to_bytes
             expected = _principal_text_to_bytes("un4fu-tqaaa-aaaab-qadjq-cai")
-            assert args[1]["value"] == expected, f"Agent {i} must use same org"
+            assert rec["orgId"] == expected, f"Agent {i} must use same org"
 
 
 # ============================================================================
@@ -548,8 +547,8 @@ class TestW09FailOpenSpillDrain:
         assert action_3 is not None
 
         # previousChainHash des Recovery-Entries muss = head_before_spill sein
-        recovery_args = transport.call_update.call_args[0][1]
-        assert recovery_args[21]["value"] == head_before_spill
+        recovery_rec = transport.call_update.call_args[0][1][0]["value"]
+        assert recovery_rec["previousChainHash"] == head_before_spill
 
     def test_sequence_not_advanced_on_spill(self, tmp_pem):
         """W-09: Sequence darf bei Spill nicht erhöht werden."""

@@ -58,36 +58,39 @@ def test_log_tool_call_returns_action_id():
     assert len(result) > 0
 
 
-def test_log_tool_call_uses_add_ledger_entry():
-    """call_update muss mit 'addLedgerEntry' aufgerufen werden."""
+def test_log_tool_call_uses_add_ledger_entry_v2():
+    """call_update muss mit 'addLedgerEntryV2' aufgerufen werden."""
     client, mock_transport = _make_client()
     client.log_tool_call(tool="search", input_data={}, output_data={}, duration_ms=0)
 
     call_args = mock_transport.call_update.call_args
     assert call_args is not None
-    assert call_args[0][0] == "addLedgerEntry"
+    assert call_args[0][0] == "addLedgerEntryV2"
 
 
-def test_log_tool_call_sends_24_args():
-    """addLedgerEntry muss mit genau 24 Candid-Argumenten aufgerufen werden."""
+def test_log_tool_call_sends_single_record_arg():
+    """addLedgerEntryV2 muss mit genau 1 Candid-Record-Argument aufgerufen werden."""
     client, mock_transport = _make_client()
     client.log_tool_call(tool="search", input_data={}, output_data={}, duration_ms=0)
 
     call_args = mock_transport.call_update.call_args
     args_list = call_args[0][1]  # zweites positionales Argument = Candid-Args
-    assert len(args_list) == 24
+    assert len(args_list) == 1
+    record = args_list[0]
+    assert "type" in record
+    assert "value" in record
+    assert "actionId" in record["value"]
+    assert "otelTraceId" in record["value"]
 
 
-def test_action_type_variant_in_args():
-    """ActionType (Position 5) muss als Variant dict {'toolCall': None} kodiert sein."""
+def test_action_type_variant_in_record():
+    """ActionType im Record muss als Variant dict {'toolCall': None} kodiert sein."""
     client, mock_transport = _make_client()
     client.log_tool_call(tool="search", input_data={}, output_data={}, duration_ms=0)
 
     call_args = mock_transport.call_update.call_args
-    args_list = call_args[0][1]
-    action_type_arg = args_list[5]  # Position 5 = actionType
-    assert "value" in action_type_arg
-    assert action_type_arg["value"] == {"toolCall": None}
+    record_value = call_args[0][1][0]["value"]
+    assert record_value["actionType"] == {"toolCall": None}
 
 
 def test_log_decision_uses_decision_variant():
@@ -96,13 +99,12 @@ def test_log_decision_uses_decision_variant():
     client.log_decision(reasoning="Test reasoning", confidence=0.9)
 
     call_args = mock_transport.call_update.call_args
-    args_list = call_args[0][1]
-    action_type_arg = args_list[5]
-    assert action_type_arg["value"] == {"decision": None}
+    record_value = call_args[0][1][0]["value"]
+    assert record_value["actionType"] == {"decision": None}
 
 
-def test_org_id_passed_to_candid_args():
-    """org_id muss als zweites Candid-Argument (Position 1) übergeben werden."""
+def test_org_id_passed_in_record():
+    """org_id muss im Record als 'orgId' (bytes) enthalten sein."""
     with (
         patch("aegis.client.load_private_key", return_value=Ed25519PrivateKey.generate()),
         patch("aegis.client.CanisterTransport") as MockTransport,
@@ -126,19 +128,18 @@ def test_org_id_passed_to_candid_args():
         client.log_tool_call(tool="search", input_data={}, output_data={}, duration_ms=0)
 
         call_args = mock_transport_instance.call_update.call_args
-        args_list = call_args[0][1]
-        org_id_arg = args_list[1]  # Position 1 = orgId (bytes for Candid Principal)
-        assert org_id_arg["value"] == _principal_text_to_bytes("un4fu-tqaaa-aaaab-qadjq-cai")
+        record_value = call_args[0][1][0]["value"]
+        assert record_value["orgId"] == _principal_text_to_bytes("un4fu-tqaaa-aaaab-qadjq-cai")
 
 
 def test_org_id_passed_as_configured():
-    """org_id aus _make_client muss korrekt an Candid-Arg Position 1 durchgereicht werden."""
+    """org_id aus _make_client muss korrekt im Record durchgereicht werden."""
     client, mock_transport = _make_client()
     client.log_tool_call(tool="search", input_data={}, output_data={}, duration_ms=0)
 
     call_args = mock_transport.call_update.call_args
-    args_list = call_args[0][1]
-    assert args_list[1]["value"] == _principal_text_to_bytes("un4fu-tqaaa-aaaab-qadjq-cai")
+    record_value = call_args[0][1][0]["value"]
+    assert record_value["orgId"] == _principal_text_to_bytes("un4fu-tqaaa-aaaab-qadjq-cai")
 
 
 def test_log_error_uses_error_variant():
@@ -147,19 +148,18 @@ def test_log_error_uses_error_variant():
     client.log_error(tool="broken_tool", input_data={}, error=ValueError("boom"))
 
     call_args = mock_transport.call_update.call_args
-    args_list = call_args[0][1]
-    action_type_arg = args_list[5]
-    assert action_type_arg["value"] == {"error": None}
+    record_value = call_args[0][1][0]["value"]
+    assert record_value["actionType"] == {"error": None}
 
 
-def test_api_key_id_at_position_23():
-    """keyId (Position 23) muss der api_key_id des Clients entsprechen."""
+def test_api_key_id_in_record():
+    """keyId im Record muss der api_key_id des Clients entsprechen."""
     client, mock_transport = _make_client()
     client.log_tool_call(tool="search", input_data={}, output_data={}, duration_ms=0)
 
     call_args = mock_transport.call_update.call_args
-    args_list = call_args[0][1]
-    assert args_list[23]["value"] == "ak_test"
+    record_value = call_args[0][1][0]["value"]
+    assert record_value["keyId"] == "ak_test"
 
 
 def test_no_raw_data_sent_to_canister():
@@ -173,14 +173,14 @@ def test_no_raw_data_sent_to_canister():
     )
 
     call_args = mock_transport.call_update.call_args
-    args_list = call_args[0][1]
-    # Position 9 = inputPreview, Position 10 = outputPreview
-    assert args_list[9]["value"] == "", f"inputPreview must be empty, got: {args_list[9]['value']}"
-    assert args_list[10]["value"] == "", (
-        f"outputPreview must be empty, got: {args_list[10]['value']}"
+    record_value = call_args[0][1][0]["value"]
+    assert record_value["inputPreview"] == "", (
+        f"inputPreview must be empty, got: {record_value['inputPreview']}"
     )
-    # Position 14 = decisionReasoning — C-2: now sent (empty for tool_call with no reasoning)
-    assert args_list[14]["value"] == "", "tool_call with empty reasoning stays empty"
+    assert record_value["outputPreview"] == "", (
+        f"outputPreview must be empty, got: {record_value['outputPreview']}"
+    )
+    assert record_value["decisionReasoning"] == "", "tool_call with empty reasoning stays empty"
 
 
 def test_decision_reasoning_sent_to_canister_redacted():
@@ -189,8 +189,8 @@ def test_decision_reasoning_sent_to_canister_redacted():
     client.log_decision(reasoning="User john@example.com requested refund", confidence=0.9)
 
     call_args = mock_transport.call_update.call_args
-    args_list = call_args[0][1]
-    reasoning_value = args_list[14]["value"]
+    record_value = call_args[0][1][0]["value"]
+    reasoning_value = record_value["decisionReasoning"]
     # Reasoning must be sent (not empty) — C-2 fix
     assert reasoning_value != "", "decisionReasoning must not be empty after C-2 fix"
     # PII (email) must be redacted — C-1 fix
@@ -301,9 +301,8 @@ def test_log_observation_uses_observation_variant():
     client.log_observation(input_data="The agent observed something important")
 
     call_args = mock_transport.call_update.call_args
-    args_list = call_args[0][1]
-    action_type_arg = args_list[5]
-    assert action_type_arg["value"] == {"observation": None}
+    record_value = call_args[0][1][0]["value"]
+    assert record_value["actionType"] == {"observation": None}
 
 
 def test_concurrent_sessions_different_chain_heads():
@@ -511,3 +510,166 @@ def test_drain_outside_lock_allows_concurrent_logging():
 
     t.join(timeout=3)
     assert len(results) == 1, "Concurrent thread must be able to log during drain"
+
+
+# ---------------------------------------------------------------------------
+# Analytics: get_session_completeness / get_org_stats
+# ---------------------------------------------------------------------------
+
+def test_get_session_completeness_calls_query():
+    """get_session_completeness must call call_query with correct method."""
+    client, mock_transport = _make_client()
+    mock_transport.call_query.return_value = {
+        "sessionId": "sess_1",
+        "totalEntries": 10,
+        "errorCount": 2,
+        "errorRate": 0.2,
+        "avgDurationMs": 150,
+        "actionTypeDist": [("toolCall", 8), ("error", 2)],
+    }
+    result = client.get_session_completeness("sess_1")
+    # call_query may also be called for getSessionSequenceHead (sequence sync)
+    analytics_calls = [
+        c for c in mock_transport.call_query.call_args_list
+        if c[0][0] == "getSessionCompleteness"
+    ]
+    assert len(analytics_calls) == 1
+    assert result["totalEntries"] == 10
+    assert result["errorRate"] == 0.2
+
+
+def test_get_org_stats_calls_query():
+    """get_org_stats must call call_query with correct method."""
+    client, mock_transport = _make_client()
+    mock_transport.call_query.return_value = {
+        "totalEntries": 100,
+        "totalSessions": 5,
+        "monthlyEntries": 30,
+        "topAgents": [("agent-1", 60), ("agent-2", 40)],
+    }
+    result = client.get_org_stats()
+    # call_query may also be called for getSessionSequenceHead (sequence sync)
+    analytics_calls = [
+        c for c in mock_transport.call_query.call_args_list
+        if c[0][0] == "getOrgStats"
+    ]
+    assert len(analytics_calls) == 1
+    assert result["totalSessions"] == 5
+    assert result["topAgents"][0] == ("agent-1", 60)
+
+
+# ---------------------------------------------------------------------------
+# KYA: register_agent / update_agent_profile / get_agent_facts
+# ---------------------------------------------------------------------------
+
+def test_register_agent_calls_update():
+    """register_agent must call call_update with registerAgent method."""
+    client, mock_transport = _make_client()
+    mock_transport.call_update.return_value = {
+        "agentId": "my-agent",
+        "name": "My Agent",
+        "description": "A test agent",
+        "capabilities": ["search", "code"],
+        "framework": "langchain",
+        "modelId": "gpt-4",
+        "createdAtNs": 1000000,
+        "lastActiveNs": 1000000,
+        "totalEntries": 0,
+    }
+    result = client.register_agent(
+        agent_id="my-agent",
+        name="My Agent",
+        description="A test agent",
+        capabilities=["search", "code"],
+        framework="langchain",
+        model_id="gpt-4",
+    )
+    register_calls = [
+        c for c in mock_transport.call_update.call_args_list
+        if c[0][0] == "registerAgent"
+    ]
+    assert len(register_calls) == 1
+    assert result["agentId"] == "my-agent"
+    assert result["name"] == "My Agent"
+    assert result["capabilities"] == ["search", "code"]
+
+
+def test_register_agent_defaults():
+    """register_agent with minimal args sends empty defaults."""
+    client, mock_transport = _make_client()
+    mock_transport.call_update.return_value = {"agentId": "a1"}
+    client.register_agent(agent_id="a1", name="Agent")
+    register_calls = [
+        c for c in mock_transport.call_update.call_args_list
+        if c[0][0] == "registerAgent"
+    ]
+    assert len(register_calls) == 1
+    # args[1] is the Candid args list
+    candid_args = register_calls[0][0][1]
+    # capabilities (index 3) should be empty list
+    assert candid_args[3]["value"] == []
+    # framework (index 4) and model_id (index 5) should be empty strings
+    assert candid_args[4]["value"] == ""
+    assert candid_args[5]["value"] == ""
+
+
+def test_update_agent_profile_calls_update():
+    """update_agent_profile must call call_update with updateAgentProfile."""
+    client, mock_transport = _make_client()
+    mock_transport.call_update.return_value = {
+        "agentId": "my-agent",
+        "name": "Updated Name",
+    }
+    result = client.update_agent_profile(
+        agent_id="my-agent",
+        name="Updated Name",
+        description=None,
+        capabilities=["new-cap"],
+    )
+    update_calls = [
+        c for c in mock_transport.call_update.call_args_list
+        if c[0][0] == "updateAgentProfile"
+    ]
+    assert len(update_calls) == 1
+    assert result["name"] == "Updated Name"
+
+
+def test_update_agent_profile_opt_fields():
+    """update_agent_profile sends Opt(None) for unset fields, Opt(value) for set."""
+    client, mock_transport = _make_client()
+    mock_transport.call_update.return_value = {"agentId": "a1"}
+    client.update_agent_profile(agent_id="a1", name="New", framework=None)
+    update_calls = [
+        c for c in mock_transport.call_update.call_args_list
+        if c[0][0] == "updateAgentProfile"
+    ]
+    candid_args = update_calls[0][0][1]
+    # name (index 1) should be Opt with value
+    assert candid_args[1]["value"] == ["New"]
+    # description (index 2) should be Opt empty (None passed)
+    assert candid_args[2]["value"] == []
+    # framework (index 4) should be Opt empty (explicitly None)
+    assert candid_args[4]["value"] == []
+
+
+def test_get_agent_facts_calls_query():
+    """get_agent_facts must call call_query with getAgentFacts."""
+    client, mock_transport = _make_client()
+    mock_transport.call_query.return_value = {
+        "agentId": "my-agent",
+        "name": "My Agent",
+        "framework": "langchain",
+        "modelId": "gpt-4",
+        "totalEntries": 42,
+        "lastActiveNs": 2000000,
+        "hasVerifiedEntries": True,
+    }
+    result = client.get_agent_facts("my-agent")
+    facts_calls = [
+        c for c in mock_transport.call_query.call_args_list
+        if c[0][0] == "getAgentFacts"
+    ]
+    assert len(facts_calls) == 1
+    assert result["totalEntries"] == 42
+    assert result["hasVerifiedEntries"] is True
+    assert result["framework"] == "langchain"
