@@ -2,6 +2,26 @@
 
 All notable changes to `aegis-ledger-sdk` are documented here.
 
+## [0.3.0] — 2026-04-01
+
+### Added
+- **`otel_exporter` module** — export Aegis sessions as OTLP spans to Jaeger, Grafana Tempo, Honeycomb etc. (`AegisOTelExporter`, `export_session`, `to_readable_spans`)
+- **`aegis export-otel` CLI command** — export a session to any OTLP HTTP endpoint
+- **OTel context auto-extraction** — `_extract_otel_context()` soft-depends on `opentelemetry-api`; injected automatically into every log entry
+- **queryOnly API key permission** — canister enforces read-only mode for monitoring/CI keys; `aegis keygen --permission queryOnly`
+- **TS SDK OTel context** — `extractOtelContext()`, `setOtelContext()` in `crypto.ts`; auto-populated on every `logEntry()` call
+- **Embed widget** — `<aegis-badge>` Web Component (IIFE, SRI-ready); build via `npm run build:widget && npm run sri` in `aegis-ts-sdk`
+- **Analytics dashboard** — token counts, cost estimates, algo distribution (React frontend)
+- **ConnectAgent wizard** — 3-step setup: keygen → ZIP download → code snippet
+
+### Changed
+- `otel_trace_id`, `otel_span_id`, `otel_parent_span_id`, `cost_usd`, `token_count` included in `to_signable_dict()` (fields were optional — existing signatures remain valid)
+
+### Migration
+- No API changes — all new fields auto-populated
+- `pip install --upgrade aegis-ledger-sdk`
+- OTel extra: `pip install aegis-ledger-sdk[otel]`
+
 ## [0.2.11] — 2026-03-30
 
 ### Added

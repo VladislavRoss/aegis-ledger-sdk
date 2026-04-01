@@ -41,6 +41,7 @@ def _transport_from_config(canister_id: str | None = None):
     config = TransportConfig(canister_id=cid, private_key_path=pk_path)
     return CanisterTransport(config), cid
 
+
 def main() -> None:
     """Entry point for the `aegis` CLI command."""
     args = sys.argv[1:]
@@ -53,6 +54,7 @@ def main() -> None:
 
     if command == "init":
         from aegis.cli_init import cmd_init
+
         cmd_init(args[1:])
     elif command == "test":
         _cmd_test(args[1:])
@@ -76,26 +78,34 @@ def main() -> None:
         _cmd_doctor(args[1:])
     elif command == "register-key":
         from aegis.cli_keys import cmd_register_key
+
         cmd_register_key(args[1:])
     elif command == "revoke":
         from aegis.cli_keys import cmd_revoke
+
         cmd_revoke(args[1:])
     elif command == "reactivate-key":
         from aegis.cli_selfservice import cmd_reactivate_key
+
         cmd_reactivate_key(args[1:])
     elif command == "delete-key":
         from aegis.cli_selfservice import cmd_delete_key
+
         cmd_delete_key(args[1:])
     elif command == "update-key-desc":
         from aegis.cli_selfservice import cmd_update_key_desc
+
         cmd_update_key_desc(args[1:])
     elif command == "purge-session":
         from aegis.cli_selfservice import cmd_purge_session
+
         cmd_purge_session(args[1:])
     elif command == "session-analytics":
         _cmd_session_analytics(args[1:])
     elif command == "org-stats":
         _cmd_org_stats(args[1:])
+    elif command == "export-otel":
+        _cmd_export_otel(args[1:])
     elif command == "version":
         from aegis import __version__
 
@@ -104,6 +114,7 @@ def main() -> None:
         print(f"Unknown command: {command}")
         _print_help()
         sys.exit(1)
+
 
 def _print_help() -> None:
     print(
@@ -130,6 +141,7 @@ Commands:
   purge-session <sid> [--batch-limit N]  Purge session entries (owner/admin)
   session-analytics <sid>           Session error rate, duration, action types
   org-stats [canister_id]           Aggregated org statistics (entries, agents)
+  export-otel <sid> [--endpoint URL] Export session as OTel spans
   version                           Print SDK version
 
 Algorithms (keygen/init):
@@ -153,6 +165,7 @@ Examples:
   aegis report toqqq-lqaaa-aaaae-afc2a-cai --format eu-ai-act
         """.strip()
     )
+
 
 def _cmd_test(args: list[str]) -> None:
     """Send a real test entry via from_config() and verify it on-chain."""
@@ -188,9 +201,7 @@ def _cmd_test(args: list[str]) -> None:
             private_key_path=client._transport._config.private_key_path,
         )
         transport = CanisterTransport(config)
-        raw = transport.call_query(
-            "verifyEntry", [{"type": Types.Text, "value": action_id}]
-        )
+        raw = transport.call_query("verifyEntry", [{"type": Types.Text, "value": action_id}])
         result = _map_candid_keys(raw, _VERIFY_HASH_MAP) if isinstance(raw, dict) else raw
         if result.get("isValid"):
             print("  [OK] VERIFIED — hash chain valid, signature on-chain")
@@ -212,6 +223,7 @@ def _cmd_test(args: list[str]) -> None:
     print(f"  Entry {action_id} is verified on-chain.")
     print("  View in dashboard: https://www.aegis-ledger.com/dashboard")
     print("  List all sessions: aegis list-sessions")
+
 
 def _cmd_keygen(args: list[str]) -> None:
     """Generate a keypair (Ed25519, ML-DSA-65, or Hybrid)."""
@@ -291,6 +303,7 @@ def _cmd_keygen(args: list[str]) -> None:
     print("  2. Use the key path(s) in your AegisClient config")
     print(f"  3. NEVER commit {path}* to version control")
 
+
 def _cmd_verify(args: list[str]) -> None:
     """Verify a ledger entry via on-chain verifyEntry query."""
     if len(args) < 1:
@@ -308,9 +321,7 @@ def _cmd_verify(args: list[str]) -> None:
         from ic.candid import Types  # type: ignore[import-untyped]
 
         transport, canister_id = _transport_from_config(canister_id_arg)
-        raw = transport.call_query(
-            "verifyEntry", [{"type": Types.Text, "value": action_id}]
-        )
+        raw = transport.call_query("verifyEntry", [{"type": Types.Text, "value": action_id}])
         result = _map_candid_keys(raw, _VERIFY_HASH_MAP) if isinstance(raw, dict) else raw
 
         if result.get("isValid"):
@@ -331,6 +342,7 @@ def _cmd_verify(args: list[str]) -> None:
     except Exception as e:
         print(f"Error: {e}")
         sys.exit(1)
+
 
 def _cmd_verify_chain(args: list[str]) -> None:
     """Verify full session hash-chain offline via replay."""
@@ -355,11 +367,12 @@ def _cmd_verify_chain(args: list[str]) -> None:
 
         transport, canister_id = _transport_from_config(canister_id_arg)
         result = transport.call_query(
-            "getTrace", [
+            "getTrace",
+            [
                 {"type": Types.Text, "value": session_id},
                 {"type": Types.Null, "value": None},
                 {"type": Types.Null, "value": None},
-            ]
+            ],
         )
         entries = result.get("raw", result) if isinstance(result, dict) else result
 
@@ -368,6 +381,7 @@ def _cmd_verify_chain(args: list[str]) -> None:
             sys.exit(2)
 
         from aegis.integrity import LEDGER_ENTRY_HASH_MAP
+
         entries = [_map_candid_keys(e, LEDGER_ENTRY_HASH_MAP) for e in entries]
         # payloadHex comes as list with single hex string
         for e in entries:
@@ -395,6 +409,7 @@ def _cmd_verify_chain(args: list[str]) -> None:
     except Exception as e:
         print(f"Error: {e}")
         sys.exit(1)
+
 
 def _cmd_status(args: list[str]) -> None:
     """Check canister health via on-chain getHealth query."""
@@ -426,6 +441,7 @@ def _cmd_status(args: list[str]) -> None:
     except Exception as e:
         print(f"Error: {e}")
         sys.exit(1)
+
 
 def _cmd_report(args: list[str]) -> None:
     """Generate compliance report."""
@@ -494,6 +510,7 @@ def _cmd_report(args: list[str]) -> None:
     except Exception as e:
         print(f"Error: {e}")
         sys.exit(1)
+
 
 def _cmd_migrate(args: list[str]) -> None:
     """Re-sign entries from a canister session with a new algorithm."""
@@ -565,6 +582,7 @@ Examples:
         print(f"Error: {e}")
         sys.exit(1)
 
+
 _LIST_SESSIONS_HASH_MAP: dict[str, str] = {
     "_3142408401": "sessionId",
     "_793140989": "entryCount",
@@ -572,6 +590,7 @@ _LIST_SESSIONS_HASH_MAP: dict[str, str] = {
     "_146711460": "chainIntact",
     "_2213923415": "signatureAlgorithm",
 }
+
 
 def _cmd_spill_status() -> None:
     """Show pending spill entries (offline buffer)."""
@@ -617,6 +636,7 @@ def _cmd_spill_status() -> None:
         print(f"  Oldest:  {age.days}d {age.seconds // 3600}h ago")
     print("  Run 'aegis test' to retry flushing.")
 
+
 def _cmd_list_sessions(args: list[str]) -> None:
     """List sessions via listMySessions canister query."""
     canister_id = args[0] if args else None
@@ -629,10 +649,14 @@ def _cmd_list_sessions(args: list[str]) -> None:
 
     try:
         from ic.candid import Types  # type: ignore[import-untyped]
-        result = transport.call_query("listMySessions", [
-            {"type": Types.Null, "value": None},
-            {"type": Types.Null, "value": None},
-        ])
+
+        result = transport.call_query(
+            "listMySessions",
+            [
+                {"type": Types.Null, "value": None},
+                {"type": Types.Null, "value": None},
+            ],
+        )
         raw = result.get("raw", result) if isinstance(result, dict) else result
         sessions = raw if isinstance(raw, list) else []
 
@@ -652,6 +676,7 @@ def _cmd_list_sessions(args: list[str]) -> None:
     except Exception as e:
         print(f"Error: {e}")
         sys.exit(1)
+
 
 def _cmd_session_analytics(args: list[str]) -> None:
     """Show analytics for a session."""
@@ -714,6 +739,74 @@ def _cmd_doctor(args: list[str]) -> None:
     canister_id = args[0] if args else None
     code = doctor_main(canister_id=canister_id)
     sys.exit(code)
+
+
+def _cmd_export_otel(args: list[str]) -> None:
+    """Export session traces to OTel-compatible endpoint."""
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="Export Aegis session traces as OpenTelemetry spans",
+    )
+    parser.add_argument("session_id", help="Session ID to export")
+    parser.add_argument(
+        "--endpoint",
+        default="http://localhost:4318/v1/traces",
+        help="OTLP HTTP endpoint (default: http://localhost:4318/v1/traces)",
+    )
+    parser.add_argument(
+        "--service-name",
+        default="aegis-ledger",
+        help="OTel service.name attribute",
+    )
+    parser.add_argument(
+        "--canister-id",
+        default=None,
+        help="Canister ID (default: from config)",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show span count without sending",
+    )
+    parsed = parser.parse_args(args)
+
+    try:
+        from aegis.client import AegisClient
+        from aegis.otel_exporter import AegisOTelExporter
+
+        client = AegisClient.from_config()
+        if parsed.canister_id:
+            client._canister_id = parsed.canister_id
+
+        exporter = AegisOTelExporter(
+            client,
+            endpoint=parsed.endpoint,
+            service_name=parsed.service_name,
+        )
+
+        if parsed.dry_run:
+            # Fetch entries without sending
+            entries = exporter._get_session_entries(parsed.session_id)
+            print(f"Session: {parsed.session_id}")
+            print(f"Entries found: {len(entries)}")
+            if entries:
+                spans = [exporter._entry_to_span(e) for e in entries]
+                print(f"Spans to export: {len(spans)}")
+                print(f"Endpoint: {parsed.endpoint}")
+            return
+
+        count = exporter.export_session(parsed.session_id)
+        print(f"Exported {count} spans from session {parsed.session_id}")
+        print(f"Endpoint: {parsed.endpoint}")
+
+    except ImportError:
+        print("Error: otel_exporter module not available")
+        sys.exit(1)
+    except Exception as e:
+        print(f"Error: {e}")
+        sys.exit(1)
+
 
 if __name__ == "__main__":
     main()

@@ -30,6 +30,7 @@ def cmd_register_key(args: list[str]) -> None:
     key_id = args[0]
     key_file = ""
     algorithm = ""
+    permission = "full"
 
     if "--key-file" in args:
         idx = args.index("--key-file")
@@ -39,6 +40,14 @@ def cmd_register_key(args: list[str]) -> None:
         idx = args.index("--algorithm")
         if idx + 1 < len(args):
             algorithm = args[idx + 1]
+    if "--permission" in args:
+        idx = args.index("--permission")
+        if idx + 1 < len(args):
+            perm_val = args[idx + 1]
+            if perm_val not in ("full", "query-only"):
+                print("Error: --permission must be 'full' or 'query-only'")
+                sys.exit(1)
+            permission = "queryOnly" if perm_val == "query-only" else "full"
 
     if not key_file:
         print("Error: --key-file is required")
@@ -52,8 +61,10 @@ def cmd_register_key(args: list[str]) -> None:
     # Auto-detect algorithm from extension if not specified
     if not algorithm:
         ext_map = {
-            ".pem": "ed25519", ".mldsa65": "ml-dsa-65",
-            ".mldsa87": "ml-dsa-87", ".slh": "slh-dsa-128s",
+            ".pem": "ed25519",
+            ".mldsa65": "ml-dsa-65",
+            ".mldsa87": "ml-dsa-87",
+            ".slh": "slh-dsa-128s",
         }
         algorithm = ext_map.get(kf.suffix, "")
         if not algorithm:
@@ -61,8 +72,13 @@ def cmd_register_key(args: list[str]) -> None:
             sys.exit(1)
 
     # Validate algorithm-extension consistency
-    valid_exts = {"ed25519": [".pem"], "ml-dsa-65": [".mldsa65"], "ml-dsa-87": [".mldsa87"],
-                  "slh-dsa-128s": [".slh"], "hybrid": [".pem"]}
+    valid_exts = {
+        "ed25519": [".pem"],
+        "ml-dsa-65": [".mldsa65"],
+        "ml-dsa-87": [".mldsa87"],
+        "slh-dsa-128s": [".slh"],
+        "hybrid": [".pem"],
+    }
     if algorithm in valid_exts and kf.suffix not in valid_exts[algorithm]:
         print(f"Error: Extension '{kf.suffix}' does not match algorithm '{algorithm}'.")
         print(f"  Expected: {', '.join(valid_exts[algorithm])}")
@@ -83,20 +99,24 @@ def cmd_register_key(args: list[str]) -> None:
         if algorithm == "ed25519":
             sk = load_private_key(str(kf))
             from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
             if isinstance(sk, Ed25519PrivateKey):
                 pop_sig = sk.sign(pop_msg).hex()
         elif algorithm == "hybrid":
             from aegis.config import load_config
+
             cfg = load_config()
             sk_path = cfg.get("signing", {}).get("signing_key_path", "")
             if sk_path:
                 from aegis.schemes import create_scheme
+
                 ed_sk = load_private_key(str(kf))
                 ml_sk_bytes = Path(sk_path).read_bytes()
                 scheme = create_scheme("hybrid", (ed_sk, ml_sk_bytes))
                 pop_sig = scheme.sign(pop_msg)
         else:
             from aegis.schemes import create_scheme
+
             sk_bytes = kf.read_bytes()
             scheme = create_scheme(algorithm, sk_bytes)
             pop_sig = scheme.sign(pop_msg)
@@ -124,6 +144,7 @@ def cmd_register_key(args: list[str]) -> None:
     canister = "toqqq-lqaaa-aaaae-afc2a-cai"
     try:
         from aegis.config import get_client_config, load_config
+
         cfg = load_config()
         canister = get_client_config(cfg).get("canister_id", canister)
     except Exception:
@@ -137,8 +158,15 @@ def cmd_register_key(args: list[str]) -> None:
         _call_accept_dpa(transport)
         print("  [OK] DPA accepted")
         _call_create_api_key(
-            transport, key_id, org_id, key_id, pub_hex,
-            algorithm, pop_sig, "Registered via aegis register-key",
+            transport,
+            key_id,
+            org_id,
+            key_id,
+            pub_hex,
+            algorithm,
+            pop_sig,
+            "Registered via aegis register-key",
+            permission,
         )
         print(f"  [OK] Key {key_id} registered on-chain ({algorithm})")
     except Exception as e:
@@ -171,6 +199,7 @@ def cmd_revoke(args: list[str]) -> None:
     print("  Sign in, go to Keys tab, and click Revoke on the key.")
     try:
         import webbrowser
+
         webbrowser.open("https://www.aegis-ledger.com/dashboard")
         print("  [OK] Browser opened")
     except Exception:

@@ -33,6 +33,50 @@ class AegisTransportError(AegisError):
     """Network or canister communication problems."""
 
 
+# Alias for backward compatibility and consistency
+TransportError = AegisTransportError
+
+
+class SpillError(AegisError):
+    """Raised when spill-to-disk operations fail."""
+
+
+class CryptoError(AegisError):
+    """Raised when cryptographic operations fail."""
+
+
+class ValidationError(AegisError):
+    """Raised when input validation fails."""
+
+
+class ClientError(AegisError):
+    """Raised when client operations fail."""
+
+
+class CLIError(AegisError):
+    """Raised when CLI operations fail."""
+
+
+class OfflineError(AegisError):
+    """Raised when operation requires network but SDK is offline."""
+
+
+class RetryExhaustedError(AegisError):
+    """Raised when all retry attempts have been exhausted."""
+
+
+class InvalidSignatureError(CryptoError):
+    """Raised when signature verification fails."""
+
+
+class KeyNotFoundError(CryptoError):
+    """Raised when a key is not found."""
+
+
+# For compatibility with transport.py
+ConfigError = AegisConfigError
+
+
 _MAX_DETAIL_LEN = 50
 
 _ERROR_MAP: dict[str, tuple[type[AegisError], str]] = {

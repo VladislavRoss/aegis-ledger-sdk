@@ -77,7 +77,7 @@ def load_private_key(path: str | Path) -> Ed25519PrivateKey:
         from aegis.config import validate_key_permissions
         validate_key_permissions(key_path)
     except ImportError:
-        pass
+        raise  # M-1: never silently swallow ImportError — missing module = broken install
     raw = key_path.read_bytes()
     key = load_pem_private_key(raw, password=None)
 

@@ -19,7 +19,7 @@ import contextlib
 import json
 import logging
 import os
-import random
+import secrets
 import time
 from pathlib import Path
 from typing import Any
@@ -400,7 +400,8 @@ class CanisterTransport:
                 if attempt < self._config.max_retries - 1:
                     delay = self._config.retry_base_delay_s * (2**attempt)
                     # Add jitter (0.5x-1.0x) to prevent thundering herd
-                    delay *= 0.5 + random.random() * 0.5  # noqa: S311
+                    # H-2: secure jitter (0.5x–1.0x, cryptographically random)
+                    delay *= 0.5 + secrets.randbelow(50) / 100.0
                     logger.warning(
                         "Canister call %s failed (attempt %d/%d): %s. Retrying in %.1fs",
                         method,
@@ -494,11 +495,16 @@ class CanisterTransport:
     def _spill_to_disk(self, method: str, args: list[Any]) -> None:
         """Write a failed call to local disk for later retry."""
         spill_dir = self._spill_path.parent
+        # C-2 TOCTOU: symlink check BEFORE mkdir()
+        if spill_dir.exists() and spill_dir.is_symlink():
+            raise OSError(
+                f"Spill directory {spill_dir} is a symlink (security violation) — refusing to write"
+            )
         spill_dir.mkdir(parents=True, exist_ok=True)
-        # S-H2: symlink check — refuse to write if directory is a symlink (TOCTOU mitigation)
+        # Paranoid post-creation check: attacker may race between exists() and mkdir()
         if spill_dir.is_symlink():
             raise OSError(
-                f"Spill directory {spill_dir} is a symlink — refusing to write for security"
+                f"Spill directory {spill_dir} became a symlink after creation — aborting"
             )
         spill_dir.chmod(0o700)  # owner-only directory
 
@@ -528,8 +534,19 @@ class CanisterTransport:
                 )
                 existing = existing[discard_count:]
                 tmp = self._spill_path.with_suffix(".tmp")
-                tmp.write_text("\n".join(existing) + "\n", encoding="utf-8")
-                tmp.replace(self._spill_path)
+                # H-1: GR-7 atomic write — os.open+fsync+replace prevents corruption on crash
+                content = "\n".join(existing) + "\n"
+                fd2 = os.open(str(tmp), os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
+                try:
+                    with os.fdopen(fd2, "w", encoding="utf-8") as ftmp:
+                        ftmp.write(content)
+                        ftmp.flush()
+                        os.fsync(ftmp.fileno())
+                except Exception:
+                    with contextlib.suppress(OSError):
+                        os.unlink(str(tmp))
+                    raise
+                os.replace(str(tmp), str(self._spill_path))
                 trimmed = True
 
         # H-3 FIX: Extract raw values from Candid args so they survive
@@ -655,6 +672,12 @@ class CanisterTransport:
                         continue
                     rec_copy = dict(rec)
                     rec_copy["orgId"] = org_bytes
+                    # M-4: guard against corrupted actionType (empty dict → StopIteration)
+                    action_type_dict = rec_copy.get("actionType") or {}
+                    if not action_type_dict:
+                        logger.warning("Discarding v4 spill entry: missing or empty actionType")
+                        failed += 1
+                        continue
                     # Reconstruct V2 Candid Record args
                     args = _build_add_ledger_entry_v2_args(
                         action_id=rec_copy["actionId"],
@@ -662,7 +685,7 @@ class CanisterTransport:
                         agent_id=rec_copy["agentId"],
                         session_id=rec_copy["sessionId"],
                         sequence_number=rec_copy["sequenceNumber"],
-                        action_type=_REVERSE_ACTION_TYPE_MAP[next(iter(rec_copy["actionType"]))],
+                        action_type=_REVERSE_ACTION_TYPE_MAP[next(iter(action_type_dict))],
                         tool=rec_copy["tool"],
                         input_hash=rec_copy["inputHash"],
                         output_hash=rec_copy["outputHash"],

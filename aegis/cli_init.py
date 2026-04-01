@@ -155,8 +155,12 @@ def cmd_init(args: list[str]) -> None:
         print()
         choice = _prompt("  Choice [2]: ").strip()
         algo_map = {
-            "": "ml-dsa-65", "1": "ed25519", "2": "ml-dsa-65",
-            "3": "ml-dsa-87", "4": "slh-dsa-128s", "5": "hybrid",
+            "": "ml-dsa-65",
+            "1": "ed25519",
+            "2": "ml-dsa-65",
+            "3": "ml-dsa-87",
+            "4": "slh-dsa-128s",
+            "5": "hybrid",
         }
         algorithm = algo_map.get(choice, "")
         if not algorithm:
@@ -197,8 +201,9 @@ def cmd_init(args: list[str]) -> None:
     # Derive principal from PEM (this IS the caller identity for canister calls)
     org_id = ""
     try:
-        org_id = _derive_principal_from_pem(key_path if algorithm == "ed25519"
-                                            else key_dir / "agent_key.pem")
+        org_id = _derive_principal_from_pem(
+            key_path if algorithm == "ed25519" else key_dir / "agent_key.pem"
+        )
         print(f"  [OK] Principal: {org_id}")
     except Exception as e:
         print(f"  [WARN] Could not derive principal: {e}")
@@ -210,9 +215,7 @@ def cmd_init(args: list[str]) -> None:
             from aegis.transport import CanisterTransport, TransportConfig
 
             pem_path = key_path if algorithm == "ed25519" else key_dir / "agent_key.pem"
-            config = TransportConfig(
-                canister_id=canister, private_key_path=str(pem_path)
-            )
+            config = TransportConfig(canister_id=canister, private_key_path=str(pem_path))
             transport = CanisterTransport(config)
 
             # Accept DPA (idempotent)
@@ -221,14 +224,20 @@ def cmd_init(args: list[str]) -> None:
 
             # Register API key with PoP
             _call_create_api_key(
-                transport, api_key_id, org_id, api_key_id, pub_hex,
-                algorithm, pop_sig, "Created by aegis init",
+                transport,
+                api_key_id,
+                org_id,
+                api_key_id,
+                pub_hex,
+                algorithm,
+                pop_sig,
+                "Created by aegis init",
             )
-            print(f"  [OK] Key \"{api_key_id}\" registered (free tier: 3 keys, 10k events/mo)")
+            print(f'  [OK] Key "{api_key_id}" registered (free tier: 3 keys, 10k events/mo)')
         except Exception as e:
             err = str(e)
             if "already" in err.lower():
-                print(f"  [OK] Key \"{api_key_id}\" already registered")
+                print(f'  [OK] Key "{api_key_id}" already registered')
             else:
                 print(f"  [WARN] On-chain registration failed: {err}")
                 print("  Key will be registered on first 'aegis test' call.")
@@ -270,9 +279,8 @@ def cmd_init(args: list[str]) -> None:
         from aegis.transport import CanisterTransport, TransportConfig
 
         tc = TransportConfig(
-            canister_id=canister, private_key_path=str(
-                key_path if algorithm == "ed25519" else key_dir / "agent_key.pem"
-            )
+            canister_id=canister,
+            private_key_path=str(key_path if algorithm == "ed25519" else key_dir / "agent_key.pem"),
         )
         transport = CanisterTransport(tc)
         health = transport.call_query("getHealth", [])
@@ -335,9 +343,13 @@ def _call_create_api_key(
     algorithm: str,
     pop_sig: str,
     description: str = "",
+    permission: str = "full",
 ) -> dict:
     """Register API key directly on canister via createApiKey()."""
     from ic.candid import Types  # type: ignore[import-untyped]
+
+    perm_variant = {"full": None, "queryOnly": None}[permission]
+    perm_type = Types.Variant({"full": Types.Null, "queryOnly": Types.Null})
 
     args = [
         {"type": Types.Text, "value": key_id},
@@ -351,6 +363,7 @@ def _call_create_api_key(
             "type": Types.Opt(Types.Text),
             "value": [description] if description else [],
         },
+        {"type": Types.Opt(perm_type), "value": [perm_variant] if permission != "full" else []},
     ]
     # Use _do_call directly — createApiKey must NEVER be spilled or retried.
     # Spilling admin calls causes poison entries that drain forever (14 GB RAM leak).
@@ -363,8 +376,10 @@ def _call_create_api_key(
 def _detect_existing_keys(key_dir: Path) -> list[tuple[str, str, str]]:
     """Detect existing keys in key_dir. Returns [(algo, ext, path)]."""
     ext_to_algo = {
-        ".pem": "ed25519", ".mldsa65": "ml-dsa-65",
-        ".mldsa87": "ml-dsa-87", ".slh": "slh-dsa-128s",
+        ".pem": "ed25519",
+        ".mldsa65": "ml-dsa-65",
+        ".mldsa87": "ml-dsa-87",
+        ".slh": "slh-dsa-128s",
     }
     existing: list[tuple[str, str, str]] = []
     if not key_dir.is_dir():
@@ -459,7 +474,8 @@ def _gen_hybrid(key_dir: Path) -> tuple[Path, str, str]:
 def _gen_pq(key_dir: Path, algorithm: str) -> tuple[Path, str, str]:
     """Generate or reuse PQ key. Returns (pem_path, signing_key_path, pub_hex)."""
     ext = {
-        "ml-dsa-65": ".mldsa65", "ml-dsa-87": ".mldsa87",
+        "ml-dsa-65": ".mldsa65",
+        "ml-dsa-87": ".mldsa87",
         "slh-dsa-128s": ".slh",
     }[algorithm]
     key_path = key_dir / ("agent_key" + ext)
@@ -475,11 +491,7 @@ def _gen_pq(key_dir: Path, algorithm: str) -> tuple[Path, str, str]:
 
     if key_path.exists():
         print(f"  [OK] PQ key already exists: {key_path}")
-        pub_hex = (
-            pub_path.read_text(encoding="utf-8").strip()
-            if pub_path.exists()
-            else "???"
-        )
+        pub_hex = pub_path.read_text(encoding="utf-8").strip() if pub_path.exists() else "???"
     else:
         gen_fn_name = {
             "ml-dsa-65": "generate_mldsa65_keypair",
@@ -500,7 +512,10 @@ def _gen_pq(key_dir: Path, algorithm: str) -> tuple[Path, str, str]:
 
 
 def _compute_pop(
-    algorithm: str, key_id: str, key_path: Path, signing_key_path: str,
+    algorithm: str,
+    key_id: str,
+    key_path: Path,
+    signing_key_path: str,
 ) -> str:
     """Compute Proof of Possession signature for the given key ID."""
     pop_msg = f"aegis-pop:{key_id}".encode()

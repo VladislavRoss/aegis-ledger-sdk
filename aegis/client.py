@@ -116,7 +116,8 @@ class AegisClient(CanisterOpsMixin):
         self._org_id = org_id
         self._session_id = session_id or agent_id or f"agent_{uuid.uuid4().hex[:8]}"
         self._sequence: int = 0
-        self._lock = threading.Lock()
+        # RLock: reentrant — _sync_sequence_from_canister() is called within _log()'s lock
+        self._lock = threading.RLock()
         self._fail_open = fail_open
         self._redact_pii = redact_pii
         self._default_metadata = metadata or {}
@@ -179,32 +180,40 @@ class AegisClient(CanisterOpsMixin):
         )
 
     def _sync_sequence_from_canister(self) -> None:
-        """Query canister for latest sequence head — agent-centric session reuse."""
-        try:
-            from ic.candid import Types
-            raw = self._transport.call_query(
-                "getSessionSequenceHead",
-                [{"type": Types.Text, "value": self._session_id}],
-            )
-            if not isinstance(raw, dict):
-                return
-            seq_head = raw.get("sequenceHead")
-            chain_hash = raw.get("chainHash")
-            if seq_head is None and chain_hash is None:
-                for v in raw.values():
-                    if isinstance(v, list) and v and isinstance(v[0], (int, float)):
-                        seq_head = v[0]
-                    elif isinstance(v, str) and len(v) == 64:
-                        chain_hash = v
-            if isinstance(seq_head, list) and seq_head:
-                seq_head = seq_head[0]
-            has_entries = isinstance(chain_hash, str) and len(chain_hash) == 64
-            if isinstance(seq_head, (int, float)) and (int(seq_head) > 0 or has_entries):
-                self._sequence = int(seq_head) + 1
-            if has_entries:
-                self._chain_heads[self._session_id] = chain_hash
-        except Exception:
-            pass
+        """Query canister for latest sequence head + chain hash — agent-centric session reuse.
+
+        MUST be called under self._lock (RLock, reentrant-safe).
+        Addresses C-1 (race condition) + H-4 (disjoint chain after restart).
+        """
+        with self._lock:
+            try:
+                from ic.candid import Types
+                raw = self._transport.call_query(
+                    "getSessionSequenceHead",
+                    [{"type": Types.Text, "value": self._session_id}],
+                )
+                if not isinstance(raw, dict):
+                    return
+                seq_head = raw.get("sequenceHead")
+                chain_hash = raw.get("chainHash")
+                if seq_head is None and chain_hash is None:
+                    for v in raw.values():
+                        if isinstance(v, list) and v and isinstance(v[0], (int, float)):
+                            seq_head = v[0]
+                        elif isinstance(v, str) and len(v) == 64:
+                            chain_hash = v
+                if isinstance(seq_head, list) and seq_head:
+                    seq_head = seq_head[0]
+                has_entries = isinstance(chain_hash, str) and len(chain_hash) == 64
+                if isinstance(seq_head, (int, float)):
+                    new_seq = int(seq_head) + 1
+                    if new_seq > self._sequence:  # only advance forward
+                        self._sequence = new_seq
+                if has_entries and chain_hash not in ("", None):
+                    # Restore chain head to prevent disjoint chain after restart (H-4)
+                    self._chain_heads[self._session_id] = chain_hash
+            except Exception:
+                pass
 
     # -- Factory: zero-config construction from ~/.aegis/config.toml ----
 
@@ -810,6 +819,10 @@ class AegisClient(CanisterOpsMixin):
             output_data = redact_pii_data(output_data)
             if reasoning:
                 reasoning = str(redact_pii_data(reasoning))
+            # M-2: metadata can also contain PII — redact after merge
+            merged_metadata = {
+                k: str(redact_pii_data(v)) for k, v in merged_metadata.items()
+            }
 
         # C4: Lock um den gesamten kritischen Bereich
         # (sequence read → sign → hash-chain → submit → increment)
@@ -875,7 +888,7 @@ class AegisClient(CanisterOpsMixin):
                     except Exception:
                         pass  # Fall through to spill
                 if self._fail_open:
-                    translated = translate_error(str(e), key_id=self._api_key_id)
+                    translated = translate_error(str(e))  # C-3: key_id stripped
                     logger.warning("Failed to log action (fail_open=True): %s", translated)
                     return f"spilled_{uuid.uuid4().hex[:8]}"
                 raise
