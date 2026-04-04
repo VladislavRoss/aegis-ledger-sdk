@@ -15,8 +15,9 @@ Quickstart (after ``aegis init``)::
 Full documentation: https://www.aegis-ledger.com/docs
 """
 
-__version__ = "0.3.1"
+__version__ = "0.3.2"
 
+from aegis.auto import auto
 from aegis.client import AegisClient
 from aegis.config import (
     get_client_config,
@@ -106,5 +107,16 @@ __all__ = [
     "generate_report",
     "sha256_hex",
     "sha256_json",
+    "auto",
     "verify_chain",
 ]
+
+# AEGIS_AUTO env trigger -- zero-config instrumentation
+import os as _os
+
+if _os.environ.get("AEGIS_AUTO", "").strip() in ("1", "true", "yes"):
+    from aegis.auto import auto as _auto
+
+    _auto()
+    del _auto
+del _os
