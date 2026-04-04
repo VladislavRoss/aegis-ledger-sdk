@@ -1,23 +1,4 @@
-"""
-aegis.client — The primary interface for the Aegis Ledger SDK.
-
-Usage (after ``aegis init``)::
-
-    from aegis import AegisClient
-
-    client = AegisClient.from_config()
-
-    client.log_tool_call(
-        tool="stripe.create_charge",
-        input_data={"amount": 5000, "currency": "usd"},
-        output_data={"id": "ch_xxx", "status": "succeeded"},
-        duration_ms=340,
-    )
-
-    @client.trace(action_type="tool_call")
-    def search_web(query: str) -> dict:
-        return requests.get(f"https://api.search.com?q={query}").json()
-"""
+"""aegis.client — Primary interface for the Aegis Ledger SDK."""
 
 from __future__ import annotations
 
@@ -63,6 +44,7 @@ from aegis.types import (
     ActionStatus,
     ActionType,
     Environment,
+    JsonValue,
     LogEntry,
 )
 
@@ -95,6 +77,7 @@ class AegisClient(CanisterOpsMixin):
         signature_scheme: str | None = None,
         signing_key_path: str | Path | None = None,
         metadata: dict[str, str] | None = None,
+        parent_session_id: str = "",
     ):
         """Initialize the Aegis client for logging AI agent actions."""
         # --- Input validation ---
@@ -169,6 +152,12 @@ class AegisClient(CanisterOpsMixin):
             self._org_id = self._derive_org_id()
         self._action_stack: list[str] = []  # parent-child tracking
         self._chain_heads: dict[str, str] = {}  # session_id → last chainHash
+        self._parent_session_id: str = parent_session_id  # B17: multi-agent correlation
+        # B8: Session counters for completeness metric (EU AI Act Art.12)
+        self._total_calls: int = 0
+        self._logged_calls: int = 0
+        self._failed_calls: int = 0
+        self._spilled_calls: int = 0
         # Agent-centric: sync sequence from canister if reusing existing session
         self._sync_sequence_from_canister()
         logger.info(
@@ -212,8 +201,10 @@ class AegisClient(CanisterOpsMixin):
                 if has_entries and chain_hash not in ("", None):
                     # Restore chain head to prevent disjoint chain after restart (H-4)
                     self._chain_heads[self._session_id] = chain_hash
+            except ImportError:
+                logger.debug("ic-py not installed, skipping sequence sync")
             except Exception:
-                pass
+                logger.debug("Sequence sync failed (non-fatal)", exc_info=True)
 
     # -- Factory: zero-config construction from ~/.aegis/config.toml ----
 
@@ -266,15 +257,13 @@ class AegisClient(CanisterOpsMixin):
 
         return cls(**kwargs)
 
-    # ------------------------------------------------------------------
     # PUBLIC API: Explicit logging methods
-    # ------------------------------------------------------------------
 
     def log_tool_call(
         self,
         tool: str,
-        input_data: Any,
-        output_data: Any,
+        input_data: JsonValue,
+        output_data: JsonValue,
         duration_ms: int,
         status: ActionStatus = ActionStatus.SUCCESS,
         reasoning: str = "",
@@ -302,8 +291,8 @@ class AegisClient(CanisterOpsMixin):
         self,
         reasoning: str,
         confidence: float,
-        input_data: Any = None,
-        output_data: Any = None,
+        input_data: JsonValue = None,
+        output_data: JsonValue = None,
         duration_ms: int = 0,
         metadata: dict[str, str] | None = None,
     ) -> str:
@@ -322,8 +311,8 @@ class AegisClient(CanisterOpsMixin):
 
     def log_observation(
         self,
-        input_data: Any,
-        output_data: Any = None,
+        input_data: JsonValue,
+        output_data: JsonValue = None,
         duration_ms: int = 0,
         metadata: dict[str, str] | None = None,
     ) -> str:
@@ -343,7 +332,7 @@ class AegisClient(CanisterOpsMixin):
     def log_error(
         self,
         tool: str,
-        input_data: Any,
+        input_data: JsonValue,
         error: Exception | str,
         duration_ms: int = 0,
         metadata: dict[str, str] | None = None,
@@ -368,8 +357,8 @@ class AegisClient(CanisterOpsMixin):
     def log_human_override(
         self,
         override_reason: str,
-        input_data: Any = None,
-        output_data: Any = None,
+        input_data: JsonValue = None,
+        output_data: JsonValue = None,
         duration_ms: int = 0,
         metadata: dict[str, str] | None = None,
     ) -> str:
@@ -432,9 +421,7 @@ class AegisClient(CanisterOpsMixin):
         return self._transport.call_query("getOrgStats", [])
 
 
-    # ------------------------------------------------------------------
     # PUBLIC API: The @trace decorator
-    # ------------------------------------------------------------------
 
     def trace(
         self,
@@ -541,9 +528,7 @@ class AegisClient(CanisterOpsMixin):
 
         return decorator
 
-    # ------------------------------------------------------------------
     # PUBLIC API: Context manager for parent-child grouping
-    # ------------------------------------------------------------------
 
     @contextmanager
     def span(
@@ -579,16 +564,10 @@ class AegisClient(CanisterOpsMixin):
             with self._lock:
                 self._action_stack.pop()
 
-    # ------------------------------------------------------------------
     # PUBLIC API: Session and state management
-    # ------------------------------------------------------------------
 
     def new_session(self, session_id: str | None = None) -> str:
-        """
-        Start a new session, resetting the sequence counter.
-
-        Returns the new session_id.
-        """
+        """Start a new session, resetting the sequence counter."""
         with self._lock:
             old_session_id = self._session_id
             prefix = self._agent_id or "agent"
@@ -606,6 +585,34 @@ class AegisClient(CanisterOpsMixin):
         return self._session_id
 
     @property
+    def parent_session_id(self) -> str:
+        """Parent session ID for multi-agent correlation (empty if root agent)."""
+        return self._parent_session_id
+
+    def spawn_child(
+        self,
+        agent_id: str,
+        session_id: str | None = None,
+        **overrides: Any,
+    ) -> AegisClient:
+        """Create a child client correlated to this session via parent_session_id."""
+        return AegisClient(
+            canister_id=self._canister_id,
+            api_key_id=self._api_key_id,
+            private_key_path=overrides.pop(
+                "private_key_path", self._transport._config.private_key_path,
+            ),
+            agent_id=agent_id,
+            org_id=self._org_id,
+            session_id=session_id,
+            network=self._transport._config.network,
+            fail_open=self._fail_open,
+            redact_pii=self._redact_pii,
+            parent_session_id=self._session_id,
+            **overrides,
+        )
+
+    @property
     def sequence_number(self) -> int:
         """Current sequence number (next entry will use this value)."""
         return self._sequence
@@ -620,16 +627,7 @@ class AegisClient(CanisterOpsMixin):
         return self._transport.drain_spill_buffer()
 
     def log_batch(self, entries: list[dict[str, Any]]) -> list[str]:
-        """
-        Log multiple entries sequentially, returning a list of action_ids.
-
-        Each entry dict should contain keyword arguments matching _log:
-        action_type, tool, input_data, output_data, duration_ms, status,
-        reasoning, confidence, metadata.
-
-        Entries are logged atomically one-by-one (each acquires the lock),
-        guaranteeing monotonic sequence numbers and correct hash-chaining.
-        """
+        """Log multiple entries sequentially, returning a list of action_ids."""
         valid_action_types = {e.value for e in ActionType}
         valid_statuses = {e.value for e in ActionStatus}
         for i, entry in enumerate(entries):
@@ -666,11 +664,33 @@ class AegisClient(CanisterOpsMixin):
 
     # Self-service + KYA methods → canister_ops.py (CanisterOpsMixin)
 
+    def summary(self) -> dict[str, int | float]:
+        """Return session counters for completeness metric (EU AI Act Art.12).
+
+        Returns dict with: total, logged, spilled, failed, pending, completeness.
+        """
+        pending = self._transport.spill_count
+        total = self._total_calls
+        completeness = (self._logged_calls / total * 100.0) if total > 0 else 100.0
+        return {
+            "total": total,
+            "logged": self._logged_calls,
+            "spilled": self._spilled_calls,
+            "failed": self._failed_calls,
+            "pending": pending,
+            "completeness": round(completeness, 1),
+        }
+
     def close(self) -> None:
-        """Drain spill buffer and release resources."""
+        """Drain spill buffer, log session summary, and release resources."""
         with contextlib.suppress(Exception):
             self._transport.drain_spill_buffer()
-        logger.info("Aegis client closed: agent=%s session=%s", self._agent_id, self._session_id)
+        s = self.summary()
+        logger.info(
+            "Aegis closed: agent=%s session=%s — %d logged, %d spilled, %d pending (%.1f%%)",
+            self._agent_id, self._session_id,
+            s["logged"], s["spilled"], s["pending"], s["completeness"],
+        )
 
     def __enter__(self) -> AegisClient:
         return self
@@ -678,16 +698,14 @@ class AegisClient(CanisterOpsMixin):
     def __exit__(self, *exc: Any) -> None:
         self.close()
 
-    # ------------------------------------------------------------------
     # INTERNAL: Core logging implementation
-    # ------------------------------------------------------------------
 
     def _prepare_entry(
         self,
         action_type: ActionType,
         tool: str,
-        input_data: Any,
-        output_data: Any,
+        input_data: JsonValue,
+        output_data: JsonValue,
         duration_ms: int,
         status: ActionStatus,
         reasoning: str,
@@ -725,6 +743,7 @@ class AegisClient(CanisterOpsMixin):
             otel_trace_id=otel_trace_id,
             otel_span_id=otel_span_id,
             otel_parent_span_id=otel_parent_span_id,
+            parent_session_id=self._parent_session_id,
         )
 
     def _build_candid_args(
@@ -772,14 +791,15 @@ class AegisClient(CanisterOpsMixin):
             otel_parent_span_id=entry.otel_parent_span_id,
             cost_usd=entry.cost_usd,
             token_count=entry.token_count,
+            parent_session_id=entry.parent_session_id,
         )
 
     def _log(
         self,
         action_type: ActionType,
         tool: str,
-        input_data: Any,
-        output_data: Any,
+        input_data: JsonValue,
+        output_data: JsonValue,
         duration_ms: int,
         status: ActionStatus,
         reasoning: str,
@@ -824,6 +844,8 @@ class AegisClient(CanisterOpsMixin):
                 k: str(redact_pii_data(v)) for k, v in merged_metadata.items()
             }
 
+        self._total_calls += 1
+
         # C4: Lock um den gesamten kritischen Bereich
         # (sequence read → sign → hash-chain → submit → increment)
         should_drain = False
@@ -859,6 +881,7 @@ class AegisClient(CanisterOpsMixin):
 
                 self._chain_heads[entry.session_id] = chain_hash
                 self._sequence += 1
+                self._logged_calls += 1
                 should_drain = self._transport.spill_count > 0
 
                 self._write_snapshot(action_id, chain_hash, entry.session_id, now_ms)
@@ -883,13 +906,19 @@ class AegisClient(CanisterOpsMixin):
                         )
                         self._chain_heads[entry.session_id] = chain_hash
                         self._sequence += 1
+                        self._logged_calls += 1
                         self._write_snapshot(action_id, chain_hash, entry.session_id, now_ms)
                         return action_id
-                    except Exception:
-                        pass  # Fall through to spill
+                    except Exception as retry_exc:
+                        logger.warning("Retry after sequence sync also failed: %s",
+                                       str(retry_exc)[:200])
+                        # Spill the entry so it's not lost
+                        with contextlib.suppress(Exception):
+                            self._transport._spill_to_disk(candid_args, entry.session_id)
                 if self._fail_open:
                     translated = translate_error(str(e))  # C-3: key_id stripped
                     logger.warning("Failed to log action (fail_open=True): %s", translated)
+                    self._spilled_calls += 1
                     return f"spilled_{uuid.uuid4().hex[:8]}"
                 raise
 
@@ -900,9 +929,7 @@ class AegisClient(CanisterOpsMixin):
 
         return action_id
 
-    # ------------------------------------------------------------------
     # Integrity Snapshot — delegated to integrity.py
-    # ------------------------------------------------------------------
 
     @property
     def _snapshot_path(self) -> Path:
@@ -920,9 +947,7 @@ class AegisClient(CanisterOpsMixin):
         from .integrity import verify_integrity
         return verify_integrity(self._snapshot_path, self._transport, sample_size)
 
-    # ------------------------------------------------------------------
     # INTERNAL: Environment auto-detection
-    # ------------------------------------------------------------------
 
     def _derive_org_id(self) -> str:
         """Derive ICP principal from Ed25519 key. Fallback: 'aaaaa-aa'."""
@@ -952,13 +977,10 @@ class AegisClient(CanisterOpsMixin):
         """Auto-detect runtime environment by sniffing installed packages."""
         frameworks: list[str] = []
         versions: list[str] = []
-        model_provider = ""
-        model_id = ""
-
         for mod_name, fw_name in [
             ("langchain", "langchain"), ("crewai", "crewai"),
             ("autogen", "autogen"), ("openai", "openai_agents"),
-            ("claude_agent_sdk", "anthropic_sdk"),
+            ("anthropic", "anthropic_sdk"),
         ]:
             try:
                 mod = __import__(mod_name)
@@ -966,13 +988,8 @@ class AegisClient(CanisterOpsMixin):
                 versions.append(getattr(mod, "__version__", "unknown"))
             except ImportError:
                 pass
-        framework = "+".join(frameworks) if frameworks else "unknown"
-        framework_version = "+".join(versions) if versions else "0.0.0"
-        runtime = f"python{sys.version_info.major}.{sys.version_info.minor}"
         return Environment(
-            framework=framework,
-            framework_version=framework_version,
-            model_provider=model_provider,
-            model_id=model_id,
-            runtime=runtime,
+            framework="+".join(frameworks) or "unknown",
+            framework_version="+".join(versions) or "0.0.0",
+            runtime=f"python{sys.version_info.major}.{sys.version_info.minor}",
         )

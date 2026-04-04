@@ -19,6 +19,14 @@ mcp_mod = pytest.importorskip("mcp", reason="mcp package not installed")
 # ---------------------------------------------------------------------------
 
 
+def _read_spill_entry(index: int = 0) -> dict:
+    """Read a spilled entry from the persistent MCP queue file."""
+    import aegis.mcp_server as ms
+    content = ms._MCP_QUEUE_PATH.read_text(encoding="utf-8").strip()
+    lines = content.split("\n")
+    return json.loads(lines[index])
+
+
 def _make_mock_client(
     action_id: str = "act_test_123",
     session_id: str = "sess_abc",
@@ -71,19 +79,19 @@ def _run(coro):
 
 
 @pytest.fixture(autouse=True)
-def reset_singletons():
+def reset_singletons(tmp_path):
     """Reset _client, _transport, and _client_error globals between tests."""
     import aegis.mcp_server as ms
     ms._client = None
     ms._transport = None
     ms._client_error = None
-    ms._bg_queue.clear()
     ms._bg_stop.set()  # stop any running bg worker
+    # Redirect spill queue to tmp_path so tests don't pollute ~/.aegis/
+    ms._MCP_QUEUE_PATH = tmp_path / "mcp_queue.jsonl"
     yield
     ms._client = None
     ms._transport = None
     ms._client_error = None
-    ms._bg_queue.clear()
     ms._bg_stop.set()
 
 
@@ -174,45 +182,41 @@ class TestLogToolCall:
         assert result["queue_depth"] >= 1
 
     def test_queues_tool_name(self):
-        import aegis.mcp_server as ms
         client = _make_mock_client()
         self._call(client, tool="db_query")
-        assert len(ms._bg_queue) == 1
-        method, args, kwargs = ms._bg_queue[0]
-        assert method == "log_tool_call"
-        assert kwargs["tool"] == "db_query"
+        entry = _read_spill_entry()
+        assert entry["action_type"] == "tool_call"
+        assert entry["tool"] == "db_query"
 
     def test_parses_json_input(self):
-        import aegis.mcp_server as ms
         client = _make_mock_client()
         self._call(client, input_data='{"key": "value"}')
-        _, _, kwargs = ms._bg_queue[0]
-        assert kwargs["input_data"] == {"key": "value"}
+        entry = _read_spill_entry()
+        assert entry["input_data"] == {"key": "value"}
 
     def test_raw_string_fallback_on_invalid_json(self):
-        import aegis.mcp_server as ms
         client = _make_mock_client()
         self._call(client, input_data="not-json")
-        _, _, kwargs = ms._bg_queue[0]
-        assert kwargs["input_data"] == "not-json"
+        entry = _read_spill_entry()
+        assert entry["input_data"] == "not-json"
 
     def test_queues_duration_and_status(self):
-        import aegis.mcp_server as ms
         client = _make_mock_client()
         self._call(client, duration_ms=500, status="error")
-        _, _, kwargs = ms._bg_queue[0]
-        assert kwargs["duration_ms"] == 500
-        assert kwargs["status"] == "error"
+        entry = _read_spill_entry()
+        assert entry["duration_ms"] == 500
+        assert entry["status"] == "error"
 
-    def test_raises_when_client_not_configured(self):
+    def test_spills_without_client(self):
+        """Log tools must spill to disk even without a client (the core fix)."""
         import aegis.mcp_server as ms
-        with patch("aegis.mcp_server._get_config", return_value={
-            "canister_id": "c", "api_key_id": "", "private_key_path": "",
-            "agent_id": "mcp-agent", "org_id": "", "network": "https://icp-api.io",
-        }), pytest.raises(ValueError, match="AEGIS_API_KEY_ID"):
-            _run(ms.aegis_log_tool_call(
-                tool="t", input_data="{}", output_data="{}"
-            ))
+        ms._client = None
+        result = json.loads(_run(ms.aegis_log_tool_call(
+            tool="t", input_data="{}", output_data="{}"
+        )))
+        assert result["status"] == "queued"
+        entry = _read_spill_entry()
+        assert entry["tool"] == "t"
 
 
 # ---------------------------------------------------------------------------
@@ -240,25 +244,22 @@ class TestLogDecision:
         assert result["status"] == "queued"
 
     def test_queues_reasoning(self):
-        import aegis.mcp_server as ms
         client = _make_mock_client()
         self._call(client, reasoning="chose path B")
-        _, _, kwargs = ms._bg_queue[0]
-        assert kwargs["reasoning"] == "chose path B"
+        entry = _read_spill_entry()
+        assert entry["reasoning"] == "chose path B"
 
     def test_queues_confidence(self):
-        import aegis.mcp_server as ms
         client = _make_mock_client()
         self._call(client, confidence=0.42)
-        _, _, kwargs = ms._bg_queue[0]
-        assert kwargs["confidence"] == 0.42
+        entry = _read_spill_entry()
+        assert entry["confidence"] == 0.42
 
     def test_parses_json_output(self):
-        import aegis.mcp_server as ms
         client = _make_mock_client()
         self._call(client, output_data='{"decision": "approve"}')
-        _, _, kwargs = ms._bg_queue[0]
-        assert kwargs["output_data"] == {"decision": "approve"}
+        entry = _read_spill_entry()
+        assert entry["output_data"] == {"decision": "approve"}
 
 
 # ---------------------------------------------------------------------------
@@ -281,9 +282,9 @@ class TestLogObservation:
         client = _make_mock_client()
         ms._client = client
         _run(ms.aegis_log_observation(input_data='{"x": 1}', output_data='{"y": 2}'))
-        _, _, kwargs = ms._bg_queue[0]
-        assert kwargs["input_data"] == {"x": 1}
-        assert kwargs["output_data"] == {"y": 2}
+        entry = _read_spill_entry()
+        assert entry["input_data"] == {"x": 1}
+        assert entry["output_data"] == {"y": 2}
 
 
 # ---------------------------------------------------------------------------
@@ -309,8 +310,8 @@ class TestLogError:
         client = _make_mock_client()
         ms._client = client
         _run(ms.aegis_log_error(tool="t", input_data="{}", error="BOOM", duration_ms=0))
-        _, _, kwargs = ms._bg_queue[0]
-        assert kwargs["error"] == "BOOM"
+        entry = _read_spill_entry()
+        assert entry["output_data"] == {"error": "BOOM"}
 
 
 # ---------------------------------------------------------------------------

@@ -23,10 +23,19 @@ import json
 import logging
 import os
 import threading
-from collections import deque
+import uuid
 from pathlib import Path
 from typing import Any
 
+from aegis.integrity import (
+    HEALTH_HASH_MAP as _HEALTH_HASH_MAP,
+)
+from aegis.integrity import (
+    VERIFY_HASH_MAP as _VERIFY_HASH_MAP,
+)
+from aegis.integrity import (
+    map_candid_keys as _map_candid_keys,
+)
 from mcp.server.fastmcp import FastMCP
 
 logger = logging.getLogger("aegis.mcp")
@@ -39,43 +48,163 @@ _CHAIN_STATE_PATH = Path.home() / ".aegis" / "agent_chain_state.json"
 _chain_lock = threading.Lock()
 
 # ---------------------------------------------------------------------------
-# Fire-and-forget background worker — entries are queued and submitted async
-# so MCP tools return instantly (<10ms) instead of blocking ~10s per ICP call.
+# Spill-First background worker — entries are persisted to disk BEFORE ICP
+# submission so MCP tools return instantly (<1ms) and no data is lost on crash.
+# BG worker batch-coalesces entries for efficient ICP submission.
 # ---------------------------------------------------------------------------
 
-_bg_queue: deque[tuple[str, tuple, dict]] = deque()
+_AEGIS_DIR = Path.home() / ".aegis"
+_MCP_QUEUE_PATH = _AEGIS_DIR / f"mcp_queue_{os.getpid()}.jsonl"
+_BATCH_SIZE = 10
+_BATCH_WAIT_S = 5.0
+
 _bg_thread: threading.Thread | None = None
 _bg_stop = threading.Event()
 _bg_started = threading.Event()
 
 
+def _adopt_orphan_queues() -> None:
+    """Adopt queue files from dead processes (crash recovery for multi-agent).
+
+    On startup, scan for mcp_queue_*.jsonl files whose PID is no longer alive.
+    Append their contents to our queue so entries are never lost.
+    """
+    if not _AEGIS_DIR.exists():
+        return
+    my_pid = str(os.getpid())
+    for qfile in _AEGIS_DIR.glob("mcp_queue_*.jsonl"):
+        pid_str = qfile.stem.replace("mcp_queue_", "")
+        if pid_str == my_pid:
+            continue
+        # Check if the PID is still alive
+        try:
+            os.kill(int(pid_str), 0)  # signal 0 = existence check
+            continue  # process alive, don't touch
+        except (OSError, ValueError):
+            pass  # process dead or invalid PID — adopt its entries
+        try:
+            content = qfile.read_text(encoding="utf-8").strip()
+            if content:
+                fd = os.open(str(_MCP_QUEUE_PATH), os.O_CREAT | os.O_WRONLY | os.O_APPEND, 0o600)
+                try:
+                    os.write(fd, (content + "\n").encode("utf-8"))
+                finally:
+                    os.close(fd)
+                n = content.count("\n") + 1
+                logger.info("Adopted %d orphan entries from %s", n, qfile.name)
+            qfile.unlink()
+        except OSError:
+            logger.debug("Could not adopt orphan queue %s", qfile.name, exc_info=True)
+
+
+def _spill_entry(entry: dict[str, Any]) -> None:
+    """Persist a log entry to disk (Spill-First: data safe before ICP submission)."""
+    _MCP_QUEUE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    # S-4: Harden directory permissions (0o700) — matches transport.py spill_dir
+    with contextlib.suppress(OSError):
+        _MCP_QUEUE_PATH.parent.chmod(0o700)
+    # S-5: PII redaction BEFORE disk write (prevents pre-redaction PII leak)
+    from aegis.pii import redact_pii_data
+    for field in ("input_data", "output_data", "reasoning"):
+        if field in entry:
+            entry[field] = redact_pii_data(entry[field], warn=False)
+    line = json.dumps(entry, default=str) + "\n"
+    fd = os.open(str(_MCP_QUEUE_PATH), os.O_CREAT | os.O_WRONLY | os.O_APPEND, 0o600)
+    try:
+        os.write(fd, line.encode("utf-8"))
+    finally:
+        os.close(fd)
+
+
+def _queue_depth() -> int:
+    """Return current queue depth from persistent file."""
+    if not _MCP_QUEUE_PATH.exists():
+        return 0
+    try:
+        content = _MCP_QUEUE_PATH.read_text(encoding="utf-8").strip()
+        return len(content.split("\n")) if content else 0
+    except OSError:
+        return 0
+
+
+def _peek_queue(max_entries: int) -> tuple[list[dict[str, Any]], int]:
+    """Read up to max_entries from the persistent queue without removing them."""
+    if not _MCP_QUEUE_PATH.exists():
+        return [], 0
+    try:
+        content = _MCP_QUEUE_PATH.read_text(encoding="utf-8").strip()
+    except OSError:
+        return [], 0
+    if not content:
+        return [], 0
+    lines = content.split("\n")
+    entries: list[dict[str, Any]] = []
+    count = 0
+    for line in lines[:max_entries]:
+        count += 1
+        try:
+            entries.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    return entries, count
+
+
+def _consume_queue(count: int) -> None:
+    """Remove the first ``count`` lines from the persistent queue (GR-7: atomic write)."""
+    if not _MCP_QUEUE_PATH.exists():
+        return
+    try:
+        lines = _MCP_QUEUE_PATH.read_text(encoding="utf-8").strip().split("\n")
+    except OSError:
+        return
+    remaining = lines[count:]
+    if remaining and remaining != [""]:
+        tmp = _MCP_QUEUE_PATH.with_suffix(".tmp")
+        tmp.write_text("\n".join(remaining) + "\n", encoding="utf-8")
+        tmp.replace(_MCP_QUEUE_PATH)
+    else:
+        with contextlib.suppress(OSError):
+            _MCP_QUEUE_PATH.unlink()
+
+
 def _bg_worker() -> None:
-    """Background daemon: drains _bg_queue and submits entries to ICP."""
+    """Background daemon: reads persistent queue, batch-submits to ICP.
+
+    Lazy-initializes the AegisClient on first batch — this keeps
+    MCP tool calls instant (<1ms) because _spill_entry() needs no client.
+    """
+    global _client
+    _adopt_orphan_queues()
     _bg_started.set()
     while not _bg_stop.is_set():
-        if not _bg_queue:
-            _bg_stop.wait(timeout=0.5)
+        entries, line_count = _peek_queue(_BATCH_SIZE)
+        if not entries:
+            _bg_stop.wait(timeout=_BATCH_WAIT_S)
             continue
-        try:
-            method_name, args, kwargs = _bg_queue.popleft()
-        except IndexError:
-            continue
-        try:
-            if _client is None:
-                logger.warning("BG worker: client not initialized, re-queuing")
-                _bg_queue.appendleft((method_name, args, kwargs))
-                _bg_stop.wait(timeout=2.0)
+        if _client is None:
+            try:
+                _client = _init_client()
+                logger.debug("BG worker: client initialized lazily")
+            except Exception:
+                logger.warning("BG worker: client init failed, retry in 5s",
+                               exc_info=True)
+                _bg_stop.wait(timeout=5.0)
                 continue
-            method = getattr(_client, method_name)
-            method(*args, **kwargs)
+        # Batch-coalesce: wait briefly for more entries if batch is small
+        if line_count < _BATCH_SIZE:
+            _bg_stop.wait(timeout=min(_BATCH_WAIT_S, 2.0))
+            entries, line_count = _peek_queue(_BATCH_SIZE)
+            if not entries:
+                continue
+        try:
+            _client.log_batch(entries)
             _persist_client_state()
-            logger.debug("BG submitted: %s (queue=%d)", method_name, len(_bg_queue))
+            _consume_queue(line_count)
+            logger.debug("BG batch: %d entries submitted", len(entries))
         except Exception:
-            logger.warning(
-                "BG submit failed for %s (entry spilled by SDK)",
-                method_name, exc_info=True,
-            )
+            logger.warning("BG batch submit failed (entries remain in queue)", exc_info=True)
             _persist_client_state()
+            _bg_stop.wait(timeout=2.0)
 
 
 def _ensure_bg_worker() -> None:
@@ -90,32 +219,8 @@ def _ensure_bg_worker() -> None:
     _bg_started.wait(timeout=2.0)
 
 # ---------------------------------------------------------------------------
-# Candid hash-key mapping (ic-py returns field hashes, not names)
+# Candid hash-key mapping — single source of truth in integrity.py
 # ---------------------------------------------------------------------------
-
-_HEALTH_HASH_MAP: dict[str, str] = {
-    "_576569836": "totalEntries",
-    "_1673630680": "totalKeys",
-    "_1718631411": "totalOrgs",
-    "_492408735": "heapBytes",
-    "_3726629775": "cyclesBalance",
-    "_4170640857": "deferredVerifications",
-    "_3342846017": "totalSessions",
-}
-
-_VERIFY_HASH_MAP: dict[str, str] = {
-    "_3776271665": "actionId",
-    "_3460176050": "isValid",
-    "_1390137228": "storedChainHash",
-    "_2601806392": "previousChainHash",
-    "_3248078826": "sequenceNumber",
-    "_2584819143": "message",
-}
-
-
-def _map_candid_keys(raw: dict, hash_map: dict[str, str]) -> dict:
-    """Map Candid field-hash keys to human-readable names."""
-    return {hash_map.get(str(k), str(k)): v for k, v in raw.items()}
 
 
 # ---------------------------------------------------------------------------
@@ -187,8 +292,11 @@ def _get_config() -> dict[str, str]:
         cfg["network"] = client_section.get("network", "")
         cfg["signature_scheme"] = signing.get("default_scheme", "")
         cfg["signing_key_path"] = signing.get("signing_key_path", "")
+    except ImportError:
+        logger.debug("aegis.config not available, using env vars only")
     except Exception:
-        pass
+        logger.warning("Failed to load config.toml, using env vars only",
+                       exc_info=True)
 
     # Env vars override config.toml
     _default_canister = "toqqq-lqaaa-aaaae-afc2a-cai"
@@ -231,14 +339,16 @@ def _init_client() -> Any:
             "or in ~/.aegis/config.toml [client] private_key_path."
         )
 
-    # Use agent_id as session_id — agent-centric logging, not random sessions
+    # Unique session_id per MCP process — allows parallel agents without
+    # sequence-number conflicts on the canister.  agent_id stays shared.
     agent_id = cfg["agent_id"]
+    session_id = f"{agent_id}-{uuid.uuid4().hex[:8]}"
     kwargs: dict[str, Any] = {
         "canister_id": cfg["canister_id"],
         "api_key_id": cfg["api_key_id"],
         "private_key_path": cfg["private_key_path"],
         "agent_id": agent_id,
-        "session_id": agent_id,
+        "session_id": session_id,
         "network": cfg["network"],
         "fail_open": True,
         "redact_pii": True,
@@ -252,37 +362,26 @@ def _init_client() -> Any:
 
     client = AegisClient(**kwargs)
 
-    # Restore chain state for continuous hash chain (shared with flush hook)
-    state = _load_chain_state(agent_id)
-    if state["sequence"] > 0:
-        client._sequence = state["sequence"]
-    if state["chain_hash"]:
-        client._chain_heads[agent_id] = state["chain_hash"]
-
-    # Auto-recovery: sync with canister via shared _transport (no extra alloc).
+    # Fresh session per process — no chain state restore needed (seq starts at 0).
+    # Auto-recovery: sync with canister in case session_id was reused (unlikely).
     global _transport
     try:
         if _transport is None:
             _transport = _init_transport()
-        canister_state = _sync_sequence_from_canister(_transport, session_id=agent_id)
+        canister_state = _sync_sequence_from_canister(_transport, session_id=session_id)
         if canister_state is not None:
             canister_seq, canister_hash = canister_state
             canister_next = canister_seq + 1
             if canister_next > client._sequence:
-                logger.warning(
-                    "Chain state stale: local=%d canister=%d -> syncing",
-                    client._sequence, canister_next,
-                )
                 client._sequence = canister_next
                 if canister_hash:
-                    client._chain_heads[agent_id] = canister_hash
-                _save_chain_state(agent_id, canister_next, canister_hash)
+                    client._chain_heads[session_id] = canister_hash
     except Exception:
         logger.debug("Canister sync skipped (offline or no admin access)")
 
     logger.info(
-        "MCP client initialized: agent=%s seq=%d",
-        agent_id, client._sequence,
+        "MCP client initialized: agent=%s session=%s seq=%d",
+        agent_id, session_id, client._sequence,
     )
     gc.collect()
     return client
@@ -338,17 +437,17 @@ def _persist_client_state() -> None:
     if _client is None:
         return
     try:
-        agent_id = getattr(_client, "_agent_id", "")
-        if not agent_id or not isinstance(agent_id, str):
+        sid = getattr(_client, "_session_id", "")
+        if not sid or not isinstance(sid, str):
             return
         seq = getattr(_client, "_sequence", 0)
         if not isinstance(seq, int):
             return
         heads = getattr(_client, "_chain_heads", {})
-        chain_hash = heads.get(agent_id, "")
+        chain_hash = heads.get(sid, "")
         if not isinstance(chain_hash, str):
             chain_hash = ""
-        _save_chain_state(agent_id, seq, chain_hash)
+        _save_chain_state(sid, seq, chain_hash)
     except Exception:
         logger.debug("Failed to persist client state", exc_info=True)
 
@@ -420,9 +519,9 @@ async def aegis_log_tool_call(
     Returns:
         JSON with queued status and queue depth.
     """
-    await _get_client()
     _ensure_bg_worker()
-    _bg_queue.append(("log_tool_call", (), {
+    _spill_entry({
+        "action_type": "tool_call",
         "tool": tool,
         "input_data": _parse_json(input_data),
         "output_data": _parse_json(output_data),
@@ -430,8 +529,8 @@ async def aegis_log_tool_call(
         "status": status,
         "reasoning": reasoning,
         "confidence": confidence,
-    }))
-    return json.dumps({"status": "queued", "queue_depth": len(_bg_queue)})
+    })
+    return json.dumps({"status": "queued", "queue_depth": _queue_depth()})
 
 
 @mcp.tool()
@@ -456,16 +555,18 @@ async def aegis_log_decision(
     Returns:
         JSON with queued status and queue depth.
     """
-    await _get_client()
     _ensure_bg_worker()
-    _bg_queue.append(("log_decision", (), {
-        "reasoning": reasoning,
-        "confidence": confidence,
+    _spill_entry({
+        "action_type": "decision",
+        "tool": "decision",
         "input_data": _parse_json(input_data),
         "output_data": _parse_json(output_data),
         "duration_ms": duration_ms,
-    }))
-    return json.dumps({"status": "queued", "queue_depth": len(_bg_queue)})
+        "status": "success",
+        "reasoning": reasoning,
+        "confidence": confidence,
+    })
+    return json.dumps({"status": "queued", "queue_depth": _queue_depth()})
 
 
 @mcp.tool()
@@ -486,14 +587,16 @@ async def aegis_log_observation(
     Returns:
         JSON with queued status and queue depth.
     """
-    await _get_client()
     _ensure_bg_worker()
-    _bg_queue.append(("log_observation", (), {
+    _spill_entry({
+        "action_type": "observation",
+        "tool": "observation",
         "input_data": _parse_json(input_data),
         "output_data": _parse_json(output_data),
         "duration_ms": duration_ms,
-    }))
-    return json.dumps({"status": "queued", "queue_depth": len(_bg_queue)})
+        "status": "success",
+    })
+    return json.dumps({"status": "queued", "queue_depth": _queue_depth()})
 
 
 @mcp.tool()
@@ -516,15 +619,16 @@ async def aegis_log_error(
     Returns:
         JSON with queued status and queue depth.
     """
-    await _get_client()
     _ensure_bg_worker()
-    _bg_queue.append(("log_error", (), {
+    _spill_entry({
+        "action_type": "tool_call",
         "tool": tool,
         "input_data": _parse_json(input_data),
-        "error": error,
+        "output_data": {"error": error},
         "duration_ms": duration_ms,
-    }))
-    return json.dumps({"status": "queued", "queue_depth": len(_bg_queue)})
+        "status": "error",
+    })
+    return json.dumps({"status": "queued", "queue_depth": _queue_depth()})
 
 
 @mcp.tool()

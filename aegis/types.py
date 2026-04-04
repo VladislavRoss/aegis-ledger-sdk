@@ -10,6 +10,9 @@ from __future__ import annotations
 import enum
 from dataclasses import dataclass, field
 
+# Recursive JSON-compatible value type — replaces bare `Any` in public APIs.
+JsonValue = str | int | float | bool | None | dict[str, "JsonValue"] | list["JsonValue"]
+
 
 class ActionType(enum.Enum):
     """The five canonical action types recognized by the Aegis ledger."""
@@ -89,6 +92,7 @@ class LogEntry:
     otel_parent_span_id: str = ""
     cost_usd: float = 0.0
     token_count: int = 0
+    parent_session_id: str = ""
     payload_signature: str = ""
 
     def to_signable_dict(self) -> dict:
@@ -128,6 +132,7 @@ class LogEntry:
             "otel_parent_span_id": self.otel_parent_span_id,
             "otel_span_id": self.otel_span_id,
             "otel_trace_id": self.otel_trace_id,
+            "parent_session_id": self.parent_session_id,
             "sdk_version": self.sdk_version,
             "sequence_number": self.sequence_number,
             "session_id": self.session_id,

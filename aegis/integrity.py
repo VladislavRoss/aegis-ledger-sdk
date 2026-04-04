@@ -1,6 +1,7 @@
 """Integrity Snapshot — local chain-hash cache for tamper detection."""
 from __future__ import annotations
 
+import hmac
 import json
 import logging
 import random
@@ -26,6 +27,7 @@ HEALTH_HASH_MAP: dict[str, str] = {
     "_3244729591": "schemaVersion",
     "_1389760433": "canisterVersion",
     "_4029786842": "activeKeys",
+    "_3855169950": "apiVersion",
 }
 
 VERIFY_HASH_MAP: dict[str, str] = {
@@ -179,7 +181,7 @@ def verify_integrity(
             is_valid = result.get("isValid", result.get("_3460176050", False))
             if not is_valid:
                 missing.append(aid)
-            elif stored_hash != snap["chain_hash"]:
+            elif not hmac.compare_digest(stored_hash, snap["chain_hash"]):
                 mismatches.append({
                     "action_id": aid,
                     "local": snap["chain_hash"],

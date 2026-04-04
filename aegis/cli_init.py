@@ -81,24 +81,24 @@ def cmd_init(args: list[str]) -> None:
 
     from aegis.config import _CONFIG_DIR, write_config
 
-    quickstart = "--quickstart" in args
+    quickstart = "--quickstart" in args or "--non-interactive" in args
     canister = "toqqq-lqaaa-aaaae-afc2a-cai"
 
-    # Parse --algorithm flag (new default: ml-dsa-65)
-    algorithm = "ml-dsa-65"
+    # Parse --algorithm flag or AEGIS_ALGORITHM env (default: ml-dsa-65)
+    algorithm = os.environ.get("AEGIS_ALGORITHM", "ml-dsa-65") if quickstart else "ml-dsa-65"
     if "--algorithm" in args:
         idx = args.index("--algorithm")
         if idx + 1 < len(args):
             algorithm = args[idx + 1]
-            if algorithm not in ALGO_NAMES:
-                print(f"Error: Unknown algorithm '{algorithm}'.")
-                print(f"Available: {', '.join(ALGO_NAMES)}")
-                sys.exit(1)
+    if algorithm not in ALGO_NAMES:
+        print(f"Error: Unknown algorithm '{algorithm}'.")
+        print(f"Available: {', '.join(ALGO_NAMES)}")
+        sys.exit(1)
 
     print()
     print("=== Aegis SDK Setup ===")
     if quickstart:
-        print("  (quickstart mode — using defaults, no prompts)")
+        print("  (non-interactive mode — using defaults/env vars, no prompts)")
     print()
 
     # --- Version check ---
@@ -128,10 +128,10 @@ def cmd_init(args: list[str]) -> None:
         else:
             print()
 
-    # Agent name
+    # Agent name (env var AEGIS_API_KEY_ID for non-interactive/CI)
     suggested_id = "ak_" + secrets.token_hex(3)
     if quickstart:
-        api_key_id = suggested_id
+        api_key_id = os.environ.get("AEGIS_API_KEY_ID", suggested_id)
     else:
         if not existing_keys:
             print("Step 1/3: Name & signing algorithm")
@@ -296,11 +296,67 @@ def cmd_init(args: list[str]) -> None:
     if org_id:
         print(f"  Your Principal: {org_id}")
         print("  To link with Dashboard: sign in and use 'Link CLI Key'.")
+    _show_guided_output()
     print("  Next step:    aegis test")
-    print("  Functions:    log_tool_call, log_decision, log_observation, log_error")
-    print("  Frameworks:   Anthropic, OpenAI, LangChain, CrewAI, AutoGen + MCP")
     print("  All commands: aegis --help")
     print("  Docs:         https://www.aegis-ledger.com/docs")
+
+
+# --- Guided Output: framework-specific integration snippet ---
+
+
+def _show_guided_output() -> None:
+    """Detect installed frameworks and show matching integration snippet."""
+    snippets = {
+        "langchain": (
+            "LangChain",
+            "    from aegis.langchain import AegisCallbackHandler\n"
+            "    handler = AegisCallbackHandler(AegisClient.from_config())",
+        ),
+        "crewai": (
+            "CrewAI",
+            "    from aegis.crewai import AegisCrewCallback\n"
+            "    callback = AegisCrewCallback(AegisClient.from_config())",
+        ),
+        "openai": (
+            "OpenAI Agents",
+            "    from aegis.openai_agents import AegisTracingProcessor\n"
+            "    processor = AegisTracingProcessor(AegisClient.from_config())",
+        ),
+        "anthropic": (
+            "Anthropic",
+            "    from aegis.anthropic_sdk import AegisAnthropicInterceptor\n"
+            "    interceptor = AegisAnthropicInterceptor(AegisClient.from_config())",
+        ),
+        "autogen": (
+            "AutoGen",
+            "    from aegis.autogen import AegisAutoGenHook\n"
+            "    hook = AegisAutoGenHook(AegisClient.from_config())",
+        ),
+    }
+    detected = []
+    for mod_name, (label, snippet) in snippets.items():
+        try:
+            __import__(mod_name)
+            detected.append((label, snippet))
+        except ImportError:
+            pass
+
+    print()
+    if detected:
+        label, snippet = detected[0]
+        print(f"  Detected: {label}")
+        print("  Add these 2 lines to your agent:")
+        print(snippet)
+        if len(detected) > 1:
+            others = ", ".join(lbl for lbl, _ in detected[1:])
+            print(f"  Also detected: {others} (see aegis --help)")
+    else:
+        print("  Add to your agent:")
+        print("    from aegis import AegisClient")
+        print("    client = AegisClient.from_config()")
+        print('    client.log_tool_call("my_tool", {}, {}, 100)')
+    print()
 
 
 # --- Canister Registration Helpers (B6.5: headless, no browser) ---
@@ -308,11 +364,18 @@ def cmd_init(args: list[str]) -> None:
 
 def _derive_principal_from_pem(pem_path: Path) -> str:
     """Derive ICP principal text from an Ed25519 PEM file."""
+    import re
+
     from ic.identity import Identity  # type: ignore[import-untyped]
 
     pem_str = pem_path.read_text(encoding="utf-8")
     identity = Identity.from_pem(pem_str)
-    return str(identity.sender())
+    principal = str(identity.sender())
+    # Guard against conftest.py MagicMock leak on Windows — MagicMock returns
+    # a string like "<MagicMock name='...'>" which silently poisons config.toml
+    if not re.match(r"^[a-z0-9-]{5,70}$", principal):
+        raise ValueError(f"Invalid principal (ic-py mock leak?): {principal!r}")
+    return principal
 
 
 def _call_accept_dpa(transport: object) -> int | None:

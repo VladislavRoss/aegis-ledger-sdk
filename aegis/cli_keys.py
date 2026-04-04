@@ -6,8 +6,11 @@ Separated from cli.py to keep modules under 500 lines.
 
 from __future__ import annotations
 
+import logging
 import sys
 from pathlib import Path
+
+logger = logging.getLogger("aegis")
 
 
 def _prompt(text: str) -> str:
@@ -148,7 +151,7 @@ def cmd_register_key(args: list[str]) -> None:
         cfg = load_config()
         canister = get_client_config(cfg).get("canister_id", canister)
     except Exception:
-        pass
+        logger.debug("Config load failed, using defaults", exc_info=True)
 
     transport = CanisterTransport(
         TransportConfig(canister_id=canister, private_key_path=str(pem_path))
@@ -176,6 +179,134 @@ def cmd_register_key(args: list[str]) -> None:
         else:
             print(f"  [FAIL] Registration failed: {err}")
             sys.exit(1)
+
+
+def cmd_rotate_key(args: list[str]) -> None:
+    """Rotate an API key: generate new → register → verify → update config → revoke old."""
+    from aegis.config import get_client_config, load_config, write_config
+
+    cfg = load_config()
+    client_cfg = get_client_config(cfg)
+    if not client_cfg:
+        print("Error: No config found. Run: aegis init")
+        sys.exit(1)
+
+    old_key_id = client_cfg.get("api_key_id", "")
+    old_pk_path = client_cfg.get("private_key_path", "")
+    canister_id = client_cfg.get("canister_id", "")
+    org_id = client_cfg.get("org_id", "")
+
+    if not old_key_id:
+        print("Error: No api_key_id in config — nothing to rotate.")
+        sys.exit(1)
+
+    # Parse args
+    algorithm = ""
+    for i, a in enumerate(args):
+        if a == "--algorithm" and i + 1 < len(args):
+            algorithm = args[i + 1]
+
+    if not algorithm:
+        algorithm = cfg.get("signing", {}).get("default_scheme", "ed25519")
+
+    ext_map = {"ed25519": ".pem", "ml-dsa-65": ".mldsa65", "ml-dsa-87": ".mldsa87",
+               "slh-dsa-128s": ".slh", "hybrid": ".pem"}
+    ext = ext_map.get(algorithm, ".pem")
+
+    # Step 1: Generate new key
+    import secrets
+
+    new_key_id = f"ak_{secrets.token_hex(3)}"
+    aegis_dir = Path.home() / ".aegis"
+    new_key_path = aegis_dir / f"{new_key_id}{ext}"
+
+    print()
+    print(f"=== Aegis Key Rotation: {old_key_id} → {new_key_id} ===")
+    print()
+    print(f"  Algorithm: {algorithm}")
+    print(f"  New key:   {new_key_path}")
+    print()
+
+    confirm = _prompt("  Proceed with rotation? Type 'yes': ").strip().lower()
+    if confirm != "yes":
+        print("  Aborted.")
+        return
+
+    print()
+    from aegis.crypto import generate_keypair
+
+    generate_keypair(str(new_key_path), algorithm=algorithm)
+    print(f"  [1/5] Keypair generated: {new_key_path}")
+
+    # Step 2: Register new key
+    try:
+        cmd_register_key([
+            new_key_id,
+            "--key-file", str(new_key_path),
+            "--algorithm", algorithm,
+        ])
+        print(f"  [2/5] Key {new_key_id} registered on-chain")
+    except SystemExit:
+        print("  [FAIL] Registration failed — aborting rotation.")
+        print(f"  Old key {old_key_id} is still active. No changes made.")
+        return
+
+    # Step 3: Verify new key works
+    print("  [3/5] Verifying new key...")
+    try:
+        from aegis.client import AegisClient
+
+        test_client = AegisClient(
+            canister_id=canister_id,
+            org_id=org_id,
+            api_key_id=new_key_id,
+            private_key_path=str(new_key_path),
+        )
+        result = test_client.log_tool_call(
+            "aegis.rotate.verify", {"rotation": True},
+            {"status": "ok"}, duration_ms=0,
+        )
+        test_client.close()
+        if result:
+            print(f"  [3/5] Verification passed (action: {result[:16]}...)")
+        else:
+            print("  [3/5] Verification passed")
+    except Exception as exc:
+        print(f"  [FAIL] Verification failed: {exc}")
+        print(f"  Rollback: old key {old_key_id} is still active.")
+        print(f"  New key {new_key_id} was registered but config NOT updated.")
+        return
+
+    # Step 4: Update config
+    signing_key_path = cfg.get("signing", {}).get("signing_key_path")
+    write_config(
+        canister_id=canister_id,
+        api_key_id=new_key_id,
+        agent_id=client_cfg.get("agent_id", ""),
+        private_key_path=str(new_key_path),
+        org_id=org_id,
+        signing_scheme=algorithm,
+        signing_key_path=signing_key_path,
+    )
+    print(f"  [4/5] Config updated → {new_key_id}")
+
+    # Step 5: Revoke old key (best-effort, non-fatal)
+    print(f"  [5/5] Revoking old key {old_key_id}...")
+    try:
+        from aegis.transport import CanisterTransport, TransportConfig
+
+        transport = CanisterTransport(
+            TransportConfig(canister_id=canister_id, private_key_path=old_pk_path)
+        )
+        transport.call_update("revokeApiKey", [old_key_id])
+        print(f"  [5/5] Old key {old_key_id} revoked")
+    except Exception as exc:
+        print(f"  [WARN] Could not revoke old key: {exc}")
+        print(f"  Revoke manually: aegis revoke {old_key_id}")
+
+    print()
+    print(f"  Rotation complete: {old_key_id} → {new_key_id}")
+    print()
 
 
 def cmd_revoke(args: list[str]) -> None:

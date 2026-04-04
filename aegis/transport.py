@@ -81,7 +81,7 @@ def action_type_to_candid_variant(action_type: str) -> dict[str, None]:
     return {_ACTION_TYPE_MAP[action_type]: None}
 
 
-from aegis.errors import AegisError, CanisterError  # noqa: E402, F401 — re-export
+from aegis.errors import AegisError, AegisTransportError, CanisterError, translate_error  # noqa: E402, F401, I001 — re-export after conditional import
 
 
 def _build_add_ledger_entry_args(
@@ -193,6 +193,7 @@ def _build_add_ledger_entry_v2_args(
     otel_parent_span_id: str = "",
     cost_usd: float = 0.0,
     token_count: int = 0,
+    parent_session_id: str = "",
 ) -> list[dict[str, Any]]:
     """Build a single Candid Record argument for addLedgerEntryV2."""
     try:
@@ -244,11 +245,12 @@ def _build_add_ledger_entry_v2_args(
         "otelParentSpanId": Types.Opt(Types.Text),
         "costUsd": Types.Opt(Types.Float64),
         "tokenCount": Types.Opt(Types.Nat),
+        "parentSessionId": Types.Opt(Types.Text),
     })
 
     record_value = {
         "actionId": action_id,
-        "orgId": _principal_text_to_bytes(org_id),
+        "orgId": org_id if isinstance(org_id, bytes) else _principal_text_to_bytes(org_id),
         "agentId": agent_id,
         "sessionId": session_id,
         "sequenceNumber": sequence_number,
@@ -279,6 +281,7 @@ def _build_add_ledger_entry_v2_args(
         "otelParentSpanId": [otel_parent_span_id] if otel_parent_span_id else [],
         "costUsd": [cost_usd] if cost_usd > 0.0 else [],
         "tokenCount": [token_count] if token_count > 0 else [],
+        "parentSessionId": [parent_session_id] if parent_session_id else [],
     }
 
     return [{"type": record_type, "value": record_value}]
@@ -391,17 +394,33 @@ class CanisterTransport:
 
         Update calls mutate canister state (log_action, create_api_key, etc.).
         They go through consensus and are slower (~2s) but guaranteed.
+
+        Rate-limit errors get longer backoff (2s base) to avoid hammering.
+        Per-key rate limits get short backoff (100ms) as they clear quickly.
         """
+        last_error: Exception | None = None
         for attempt in range(self._config.max_retries):
             try:
                 return self._do_call(method, args, call_type="update")
             except Exception as e:  # noqa: BLE001 — fail-open retry: any error triggers retry + spill
-                # Skip sleep after last attempt (we're about to spill anyway)
-                if attempt < self._config.max_retries - 1:
+                last_error = e
+                err_str = str(e).lower()
+
+                # Classify error for appropriate backoff
+                if "rate limit" in err_str:
+                    if "per-key" in err_str or "per_key" in err_str:
+                        delay = 0.1 * (2**attempt)  # 100ms/200ms/400ms
+                    else:
+                        delay = 2.0 * (2**attempt)  # 2s/4s/8s — org-level, back off more
+                elif "sequence" in err_str:
+                    delay = 0.05  # 50ms — sequence race, retry fast
+                else:
                     delay = self._config.retry_base_delay_s * (2**attempt)
-                    # Add jitter (0.5x-1.0x) to prevent thundering herd
-                    # H-2: secure jitter (0.5x–1.0x, cryptographically random)
-                    delay *= 0.5 + secrets.randbelow(50) / 100.0
+
+                # H-2: secure jitter (0.5x–1.0x, cryptographically random)
+                delay *= 0.5 + secrets.randbelow(50) / 100.0
+
+                if attempt < self._config.max_retries - 1:
                     logger.warning(
                         "Canister call %s failed (attempt %d/%d): %s. Retrying in %.1fs",
                         method,
@@ -427,6 +446,18 @@ class CanisterTransport:
             logger.warning(
                 "Method %s is not spillable — discarding failed call", method
             )
+
+        # Translate raw error to typed exception with human-readable message
+        typed_error = translate_error(str(last_error or "Unknown error"))
+        if isinstance(typed_error, AegisTransportError):
+            logger.error(
+                "All retries exhausted for %s: %s. Entry spilled to %s",
+                method,
+                typed_error,
+                self._spill_path,
+            )
+            raise typed_error from last_error
+
         logger.error(
             "All retries exhausted for %s. Entry spilled to %s",
             method,
@@ -435,13 +466,9 @@ class CanisterTransport:
         raise CanisterError(
             f"Canister unreachable after {self._config.max_retries} attempts. "
             f"Entry saved locally at {self._spill_path} for later retry.\n"
-            "What to do next:\n"
-            "  1. Check your internet connection\n"
-            "  2. Run 'aegis status' to verify canister availability\n"
-            "  3. Run 'aegis spill-status' to see pending entries\n"
-            "  4. Entries will auto-retry on next SDK call",
+            "Run 'aegis spill-status' to see pending entries.",
             error_code="TRANSPORT_EXHAUSTED",
-        )
+        ) from last_error
 
     def call_query(self, method: str, args: list[Any]) -> dict:
         """
@@ -676,12 +703,12 @@ class CanisterTransport:
                     action_type_dict = rec_copy.get("actionType") or {}
                     if not action_type_dict:
                         logger.warning("Discarding v4 spill entry: missing or empty actionType")
-                        failed += 1
+                        skipped += 1
                         continue
                     # Reconstruct V2 Candid Record args
                     args = _build_add_ledger_entry_v2_args(
                         action_id=rec_copy["actionId"],
-                        org_id="__raw__",  # placeholder, overridden below
+                        org_id=org_bytes,  # pre-converted from hex
                         agent_id=rec_copy["agentId"],
                         session_id=rec_copy["sessionId"],
                         sequence_number=rec_copy["sequenceNumber"],
@@ -714,8 +741,6 @@ class CanisterTransport:
                         cost_usd=_opt(rec_copy, "costUsd", 0.0),
                         token_count=_opt(rec_copy, "tokenCount", 0),
                     )
-                    # Fix orgId: replace placeholder with actual bytes
-                    args[0]["value"]["orgId"] = org_bytes
                 elif spill_ver >= 2:
                     v = entry["raw_values"]
 
@@ -825,6 +850,7 @@ class CanisterTransport:
                     "key not found",
                     "key is revoked",
                     "anonymous",
+                    "invalid principal",
                 )):
                     logger.warning(
                         "Discarding spill entry (permanent failure): %s",
@@ -832,9 +858,21 @@ class CanisterTransport:
                     )
                     skipped += 1
                 else:
-                    # Transient failure (network, timeout) — retry next time
-                    logger.warning("Spill replay failed (will retry)", exc_info=True)
-                    failed.append(line)
+                    # Transient failure (network, timeout) — retry with counter
+                    retry_count = entry.get("_retry_count", 0) + 1
+                    if retry_count >= 5:
+                        logger.warning(
+                            "Discarding spill entry after %d retries: %s",
+                            retry_count, str(exc)[:200],
+                        )
+                        skipped += 1
+                    else:
+                        entry["_retry_count"] = retry_count
+                        logger.warning(
+                            "Spill replay failed (retry %d/5)",
+                            retry_count, exc_info=True,
+                        )
+                        failed.append(json.dumps(entry))
 
         # Rewrite spill file with only the still-failed entries (atomic: GR-7)
         if failed:

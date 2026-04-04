@@ -72,9 +72,13 @@ def main() -> None:
         _cmd_migrate(args[1:])
     elif command == "spill-status":
         _cmd_spill_status()
+    elif command == "queue-status":
+        _cmd_queue_status()
     elif command == "list-sessions":
         _cmd_list_sessions(args[1:])
     elif command == "doctor":
+        from aegis.cli_ops import _cmd_doctor
+
         _cmd_doctor(args[1:])
     elif command == "register-key":
         from aegis.cli_keys import cmd_register_key
@@ -84,6 +88,14 @@ def main() -> None:
         from aegis.cli_keys import cmd_revoke
 
         cmd_revoke(args[1:])
+    elif command == "rotate-key":
+        from aegis.cli_keys import cmd_rotate_key
+
+        cmd_rotate_key(args[1:])
+    elif command == "deploy-check":
+        from aegis.cli_ops import _cmd_deploy_check
+
+        _cmd_deploy_check(args[1:])
     elif command == "reactivate-key":
         from aegis.cli_selfservice import cmd_reactivate_key
 
@@ -104,8 +116,20 @@ def main() -> None:
         _cmd_session_analytics(args[1:])
     elif command == "org-stats":
         _cmd_org_stats(args[1:])
+    elif command == "tail":
+        from aegis.cli_export import _cmd_tail
+
+        _cmd_tail(args[1:])
+    elif command == "export":
+        from aegis.cli_export import _cmd_export
+
+        _cmd_export(args[1:])
     elif command == "export-otel":
         _cmd_export_otel(args[1:])
+    elif command == "monitor":
+        _cmd_monitor(args[1:])
+    elif command == "mcp-proxy":
+        _cmd_mcp_proxy(args[1:])
     elif command == "version":
         from aegis import __version__
 
@@ -131,9 +155,12 @@ Commands:
   report [canister_id] [--format F] Generate compliance report
   migrate [options]                 Re-sign entries with a new algorithm
   spill-status                      Show pending spill entries (offline buffer)
+  queue-status                      Show all pending queues (spill + MCP)
   list-sessions [canister_id]       List your sessions on the canister
-  doctor                            Check SDK health (config, keys, canister)
+  doctor [--fix]                    Check SDK health (--fix: auto-repair)
+  deploy-check [canister_id]        Post-deploy verification (health+entry+verify)
   register-key <id> --key-file <f>  Register a new API key via Dashboard
+  rotate-key [--algorithm ALG]      Rotate API key (generate+register+revoke old)
   revoke <key_id>                   Revoke an API key (confirmation required)
   reactivate-key <key_id>           Reactivate a revoked key (owner only)
   delete-key <key_id>               Permanently delete a revoked key
@@ -141,7 +168,11 @@ Commands:
   purge-session <sid> [--batch-limit N]  Purge session entries (owner/admin)
   session-analytics <sid>           Session error rate, duration, action types
   org-stats [canister_id]           Aggregated org statistics (entries, agents)
+  tail <session_id> [--format json]  Live-tail session entries (poll)
+  export <sid> [--format F] [-o P]  Export session (jsonl/json/csv)
   export-otel <sid> [--endpoint URL] Export session as OTel spans
+  monitor [--interval N] [--once]   Start health monitoring daemon
+  mcp-proxy -- <cmd> [args...]      MCP proxy with auto-logging
   version                           Print SDK version
 
 Algorithms (keygen/init):
@@ -437,6 +468,24 @@ def _cmd_status(args: list[str]) -> None:
         deferred = health.get("deferredVerifications", 0)
         if deferred:
             print(f"  Deferred verif.:  {deferred}")
+        # Candid optionals arrive as [value] or [] from ic-py
+        api_ver = health.get("apiVersion")
+        if isinstance(api_ver, list) and api_ver:
+            api_ver = api_ver[0]
+        canister_ver = health.get("canisterVersion")
+        if isinstance(canister_ver, list) and canister_ver:
+            canister_ver = canister_ver[0]
+        if canister_ver:
+            print(f"  Canister version: {canister_ver}")
+        if api_ver:
+            from aegis import __version__ as sdk_ver
+            print(f"  API version:      {api_ver}")
+            sdk_major_minor = ".".join(sdk_ver.split(".")[:2])
+            if sdk_major_minor != api_ver:
+                print(
+                    f"  WARNING: SDK v{sdk_ver} may be incompatible with API v{api_ver}."
+                    " Consider updating: pip install --upgrade aegis-ledger-sdk"
+                )
 
     except Exception as e:
         print(f"Error: {e}")
@@ -637,6 +686,46 @@ def _cmd_spill_status() -> None:
     print("  Run 'aegis test' to retry flushing.")
 
 
+def _cmd_queue_status() -> None:
+    """Show all pending queues: spill buffer + MCP persistent queue."""
+    from pathlib import Path
+
+    print("=== Aegis Queue Status ===\n")
+
+    # 1. Spill buffer
+    spill_dir = Path.home() / ".aegis" / "spill"
+    spill_count = 0
+    if spill_dir.exists():
+        for f in spill_dir.glob("*.jsonl"):
+            lines = [x for x in f.read_text(encoding="utf-8").strip().split("\n") if x]
+            spill_count += len(lines)
+    print(f"Spill buffer:    {spill_count} pending entries")
+
+    # 2. MCP persistent queue
+    mcp_queue = Path.home() / ".aegis" / "mcp_queue.jsonl"
+    mcp_count = 0
+    if mcp_queue.exists():
+        content = mcp_queue.read_text(encoding="utf-8").strip()
+        if content:
+            mcp_count = len(content.split("\n"))
+    print(f"MCP queue:       {mcp_count} pending entries")
+
+    # 3. Hook queue
+    hook_queue = Path.home() / ".aegis" / "hook_queue.jsonl"
+    hook_count = 0
+    if hook_queue.exists():
+        content = hook_queue.read_text(encoding="utf-8").strip()
+        if content:
+            hook_count = len(content.split("\n"))
+    print(f"Hook queue:      {hook_count} pending entries")
+
+    total = spill_count + mcp_count + hook_count
+    if total == 0:
+        print("\nAll queues empty. All synced.")
+    else:
+        print(f"\nTotal pending:   {total}")
+
+
 def _cmd_list_sessions(args: list[str]) -> None:
     """List sessions via listMySessions canister query."""
     canister_id = args[0] if args else None
@@ -732,15 +821,6 @@ def _cmd_org_stats(args: list[str]) -> None:
         sys.exit(1)
 
 
-def _cmd_doctor(args: list[str]) -> None:
-    """Run SDK health diagnostics."""
-    from aegis.doctor import doctor_main
-
-    canister_id = args[0] if args else None
-    code = doctor_main(canister_id=canister_id)
-    sys.exit(code)
-
-
 def _cmd_export_otel(args: list[str]) -> None:
     """Export session traces to OTel-compatible endpoint."""
     import argparse
@@ -806,6 +886,67 @@ def _cmd_export_otel(args: list[str]) -> None:
     except Exception as e:
         print(f"Error: {e}")
         sys.exit(1)
+
+
+def _cmd_monitor(args: list[str]) -> None:
+    """Start health monitoring daemon or run a single check."""
+    import argparse
+    import dataclasses
+    import json
+
+    parser = argparse.ArgumentParser(prog="aegis monitor")
+    parser.add_argument(
+        "--interval", type=int, default=300, help="Poll interval in seconds",
+    )
+    parser.add_argument("--once", action="store_true", help="Single check, then exit")
+    parsed = parser.parse_args(args)
+
+    try:
+        from aegis.alerting import create_alerter
+        from aegis.config import load_config
+        from aegis.monitor import HealthMonitor
+
+        cfg = load_config()
+        alert_cfg = cfg.get("alerting", {})
+        if not isinstance(alert_cfg, dict):
+            alert_cfg = {}
+        alerter = create_alerter(alert_cfg)
+        mon = HealthMonitor(
+            interval_s=parsed.interval,
+            alert_handler=alerter.send_alert if alerter else None,
+        )
+
+        if parsed.once:
+            status = mon.check_health()
+            print(json.dumps(dataclasses.asdict(status), indent=2, default=str))
+            sys.exit(0 if status.status == "healthy" else 1)
+
+        mon.run()
+
+    except KeyboardInterrupt:
+        print("\nMonitor stopped.")
+    except Exception as e:
+        print(f"Error: {e}")
+        sys.exit(1)
+
+
+def _cmd_mcp_proxy(args: list[str]) -> None:
+    """Start MCP proxy interceptor with auto-logging."""
+    # Everything after '--' is the upstream command
+    if "--" in args:
+        idx = args.index("--")
+        upstream_cmd = args[idx + 1 :]
+    else:
+        upstream_cmd = args
+
+    if not upstream_cmd:
+        print("Usage: aegis mcp-proxy -- <command> [args...]")
+        print("Example: aegis mcp-proxy -- npx @anthropic/mcp-server-filesystem /dir")
+        sys.exit(1)
+
+    from aegis.mcp_proxy import run_proxy
+
+    sys.exit(run_proxy(upstream_cmd))
 
 
 if __name__ == "__main__":

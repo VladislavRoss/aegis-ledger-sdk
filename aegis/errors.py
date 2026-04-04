@@ -36,49 +36,13 @@ class AegisTransportError(AegisError):
 # Alias for backward compatibility and consistency
 TransportError = AegisTransportError
 
-
-class SpillError(AegisError):
-    """Raised when spill-to-disk operations fail."""
-
-
-class CryptoError(AegisError):
-    """Raised when cryptographic operations fail."""
-
-
-class ValidationError(AegisError):
-    """Raised when input validation fails."""
-
-
-class ClientError(AegisError):
-    """Raised when client operations fail."""
-
-
-class CLIError(AegisError):
-    """Raised when CLI operations fail."""
-
-
-class OfflineError(AegisError):
-    """Raised when operation requires network but SDK is offline."""
-
-
-class RetryExhaustedError(AegisError):
-    """Raised when all retry attempts have been exhausted."""
-
-
-class InvalidSignatureError(CryptoError):
-    """Raised when signature verification fails."""
-
-
-class KeyNotFoundError(CryptoError):
-    """Raised when a key is not found."""
-
-
 # For compatibility with transport.py
 ConfigError = AegisConfigError
 
 
 _MAX_DETAIL_LEN = 50
 
+# Order matters: more specific patterns FIRST (translate_error matches first hit).
 _ERROR_MAP: dict[str, tuple[type[AegisError], str]] = {
     "Key not found": (
         AegisAuthError,
@@ -86,21 +50,30 @@ _ERROR_MAP: dict[str, tuple[type[AegisError], str]] = {
     ),
     "Key revoked": (
         AegisAuthError,
-        "API key '{key_id}' has been revoked. Create a new key in the Dashboard.",
+        "API key '{key_id}' has been revoked. Create a new key: aegis keys create",
     ),
-    "Rate limited": (
+    "per-key rate limit": (
         AegisTransportError,
-        "Too many requests (limit: 100/s per org, 10/s per caller).",
+        "Per-key rate limit hit. Entries are buffered and auto-retried.",
     ),
-    "Anonymous caller": (
+    "rate limit": (
+        AegisTransportError,
+        "Agent sends too fast (limit: 100/s per org, 10/s per caller). "
+        "Entries are buffered and auto-retried.",
+    ),
+    "sequence": (
+        AegisTransportError,
+        "Concurrent write on same session. Entry will be resubmitted with new sequence number.",
+    ),
+    "anonymous caller": (
         AegisAuthError,
         "No identity configured. Run: aegis init",
     ),
-    "DPA not accepted": (
+    "dpa not accepted": (
         AegisAuthError,
         "Data Processing Agreement not accepted. Accept in Dashboard first.",
     ),
-    "Monthly limit": (
+    "monthly limit": (
         AegisTransportError,
         "Monthly entry limit reached for your tier. Upgrade at aegis-ledger.com.",
     ),
