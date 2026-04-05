@@ -664,9 +664,16 @@ class CanisterTransport:
                 failed.append(line)
                 continue
 
+            # Parse JSON first — corrupt lines are permanent failures,
+            # NOT transient (avoid UnboundLocalError on entry in retry branch)
             try:
                 entry = json.loads(line)
+            except json.JSONDecodeError:
+                logger.warning("Discarding corrupt spill entry (JSON decode failed)")
+                skipped += 1
+                continue
 
+            try:
                 # TTL: discard entries older than 30 days
                 age_ms = now_ms - entry.get("timestamp_ms", 0)
                 if age_ms > spill_ttl_ms:
