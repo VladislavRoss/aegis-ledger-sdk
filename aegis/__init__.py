@@ -15,7 +15,7 @@ Quickstart (after ``aegis init``)::
 Full documentation: https://www.aegis-ledger.com/docs
 """
 
-__version__ = "0.3.2"
+__version__ = "0.3.3"
 
 from aegis.auto import auto
 from aegis.client import AegisClient

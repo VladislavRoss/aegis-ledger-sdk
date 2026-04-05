@@ -80,6 +80,10 @@ def main() -> None:
         from aegis.cli_ops import _cmd_doctor
 
         _cmd_doctor(args[1:])
+    elif command == "profiles":
+        from aegis.cli_ops import _cmd_profiles
+
+        _cmd_profiles(args[1:])
     elif command == "register-key":
         from aegis.cli_keys import cmd_register_key
 
@@ -158,6 +162,7 @@ Commands:
   queue-status                      Show all pending queues (spill + MCP)
   list-sessions [canister_id]       List your sessions on the canister
   doctor [--fix]                    Check SDK health (--fix: auto-repair)
+  profiles [--active]               List profiles, show active (AEGIS_PROFILE env)
   deploy-check [canister_id]        Post-deploy verification (health+entry+verify)
   register-key <id> --key-file <f>  Register a new API key via Dashboard
   rotate-key [--algorithm ALG]      Rotate API key (generate+register+revoke old)

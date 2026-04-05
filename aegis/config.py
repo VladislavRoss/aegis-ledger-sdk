@@ -15,6 +15,25 @@ Supported keys::
     [signing]
     default_scheme = "hybrid"        # ed25519 | ml-dsa-65 | ml-dsa-87 | slh-dsa-128s | hybrid
     signing_key_path = "./agent.mldsa65"  # path to ML-DSA-65 SK (for hybrid/ml-dsa-65)
+
+Multi-Profile (P47-B3)::
+
+    # Default at top-level
+    [client]
+    canister_id = "toqqq-lqaaa-aaaae-afc2a-cai"
+
+    # Named profile (select via AEGIS_PROFILE=staging)
+    [profiles.staging.client]
+    canister_id = "uxrrr-q7777-77774-qaaaq-cai"
+    api_key_id = "ak_staging_42"
+    private_key_path = "~/.aegis/staging_key.pem"
+
+    [profiles.staging.signing]
+    default_scheme = "ed25519"
+
+Profile lookup order: ``AEGIS_PROFILE`` env var → ``profile`` kwarg → no profile
+(top-level). When a profile is active, its ``[client]`` and ``[signing]`` are
+overlaid on top of the defaults; missing keys fall back to the top-level.
 """
 
 from __future__ import annotations
@@ -74,17 +93,73 @@ def _load_toml(path: Path) -> dict[str, Any]:
         return {}
 
 
-def load_config(*, config_path: Path | None = None) -> dict[str, Any]:
+def _get_active_profile(profile: str | None = None) -> str | None:
+    """Return the active profile name or None.
+
+    Priority: explicit kwarg > ``AEGIS_PROFILE`` env var > None.
+    """
+    if profile is not None:
+        return profile or None
+    env = os.environ.get("AEGIS_PROFILE", "").strip()
+    return env or None
+
+
+def list_profiles(config: dict[str, Any] | None = None) -> list[str]:
+    """Return sorted list of profile names defined in ``[profiles.*]``."""
+    if config is None:
+        config = _load_toml(_CONFIG_FILE)
+    profiles = config.get("profiles", {})
+    if not isinstance(profiles, dict):
+        return []
+    return sorted(k for k, v in profiles.items() if isinstance(v, dict))
+
+
+def _apply_profile(config: dict[str, Any], profile_name: str) -> dict[str, Any]:
+    """Overlay ``profiles.<name>`` sections onto top-level ``[client]``/``[signing]``.
+
+    Non-destructive: returns a new dict. Missing profile → returns input unchanged.
+    Profile keys override top-level keys; unspecified keys fall back to top-level.
+    """
+    profiles = config.get("profiles", {})
+    if not isinstance(profiles, dict):
+        return config
+    profile = profiles.get(profile_name)
+    if not isinstance(profile, dict):
+        return config
+    merged: dict[str, Any] = dict(config)
+    for section in ("client", "signing"):
+        overlay = profile.get(section)
+        if not isinstance(overlay, dict):
+            continue
+        base = merged.get(section, {})
+        if not isinstance(base, dict):
+            base = {}
+        merged[section] = {**base, **overlay}
+    return merged
+
+
+def load_config(
+    *,
+    config_path: Path | None = None,
+    profile: str | None = None,
+) -> dict[str, Any]:
     """Load and validate the Aegis config file.
 
     Args:
         config_path: Override the default ``~/.aegis/config.toml``.
+        profile: Profile name to overlay (``[profiles.<name>]``). Falls back
+            to the ``AEGIS_PROFILE`` env var when ``None``.
 
     Returns:
-        Parsed config dict (may be empty if file doesn't exist).
+        Parsed config dict with profile overlay applied (may be empty if file
+        doesn't exist or profile doesn't exist → top-level only).
     """
     path = config_path or _CONFIG_FILE
-    return _load_toml(path)
+    config = _load_toml(path)
+    active = _get_active_profile(profile)
+    if active:
+        config = _apply_profile(config, active)
+    return config
 
 
 def get_default_scheme(config: dict[str, Any] | None = None) -> str:

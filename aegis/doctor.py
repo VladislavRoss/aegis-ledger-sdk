@@ -2,12 +2,112 @@
 aegis.doctor — SDK health diagnostics.
 
 Checks config, keys, canister connectivity, API key status, and spill queue.
+When --fix is enabled, auto-repairs: config, keys, spill drain, deferred verify, MCP orphan queues.
 """
 
 from __future__ import annotations
 
+import contextlib
+import os
+import secrets
 from pathlib import Path
 from typing import Any
+
+_MAINNET_BACKEND = "toqqq-lqaaa-aaaae-afc2a-cai"
+
+
+def _auto_create_config() -> str:
+    """Write a minimal config.toml (mainnet backend, default key path, new api_key_id).
+
+    Returns the short detail string about what was created.
+    """
+    from aegis.config import _CONFIG_DIR, write_config
+
+    api_key_id = "ak_" + secrets.token_hex(3)
+    key_path = _CONFIG_DIR / "agent_key.pem"
+    write_config(
+        canister_id=_MAINNET_BACKEND,
+        api_key_id=api_key_id,
+        agent_id=api_key_id,
+        private_key_path=str(key_path),
+    )
+    return f"Auto-created (canister: {_MAINNET_BACKEND[:12]}..., key: {api_key_id})"
+
+
+def _auto_generate_key(pk_path: Path) -> str:
+    """Generate an Ed25519 keypair at *pk_path*. Returns a short detail string."""
+    from aegis.crypto import generate_keypair
+
+    pk_path.parent.mkdir(parents=True, exist_ok=True)
+    _, _pub_hex = generate_keypair(pk_path)
+    size = pk_path.stat().st_size if pk_path.is_file() else 0
+    return f"Auto-generated Ed25519 key at {pk_path} ({size} bytes)"
+
+
+def _scan_mcp_queues(aegis_dir: Path) -> tuple[int, int, list[Path]]:
+    """Return (own_depth, orphan_count, orphan_files).
+
+    own_depth: line count of own PID queue (mcp_queue_<pid>.jsonl)
+    orphan_count: line count across queues from dead PIDs
+    orphan_files: list of orphan queue paths (dead-PID owned)
+    """
+    if not aegis_dir.is_dir():
+        return 0, 0, []
+    my_pid = str(os.getpid())
+    own_depth = 0
+    orphan_count = 0
+    orphan_files: list[Path] = []
+    for qfile in aegis_dir.glob("mcp_queue_*.jsonl"):
+        pid_str = qfile.stem.replace("mcp_queue_", "")
+        try:
+            content = qfile.read_text(encoding="utf-8").strip()
+        except OSError:
+            continue
+        depth = len(content.split("\n")) if content else 0
+        if pid_str == my_pid:
+            own_depth += depth
+            continue
+        # Check if PID is alive
+        alive = False
+        try:
+            os.kill(int(pid_str), 0)  # existence check (signal 0)
+            alive = True
+        except (OSError, ValueError):
+            alive = False
+        if alive:
+            # Live peer queue — count as own-family pending
+            own_depth += depth
+        else:
+            orphan_count += depth
+            orphan_files.append(qfile)
+    return own_depth, orphan_count, orphan_files
+
+
+def _adopt_orphan_queues(orphan_files: list[Path], aegis_dir: Path) -> int:
+    """Merge orphan queue contents into a single recovery file, remove originals.
+
+    Uses a dedicated recovery file (mcp_queue_recovered.jsonl) instead of
+    injecting into a live PID queue. Returns number of adopted entries.
+    """
+    if not orphan_files:
+        return 0
+    recovery_path = aegis_dir / "mcp_queue_recovered.jsonl"
+    adopted = 0
+    fd = os.open(str(recovery_path), os.O_CREAT | os.O_WRONLY | os.O_APPEND, 0o600)
+    try:
+        for qfile in orphan_files:
+            try:
+                content = qfile.read_text(encoding="utf-8").strip()
+            except OSError:
+                continue
+            if content:
+                os.write(fd, (content + "\n").encode("utf-8"))
+                adopted += content.count("\n") + 1
+            with contextlib.suppress(OSError):
+                qfile.unlink()
+    finally:
+        os.close(fd)
+    return adopted
 
 
 def run_doctor(
@@ -18,20 +118,34 @@ def run_doctor(
     """Run all diagnostic checks and return results.
 
     Each result: {"name": str, "status": "OK"|"WARN"|"FAIL", "detail": str}
-    When *fix=True*, auto-repairs fixable issues (spill drain, deferred verify).
+    When *fix=True*, auto-repairs fixable issues (config, key, spill, deferred, MCP orphans).
     """
     results: list[dict[str, Any]] = []
     _transport = None
 
     # 1. Config
-    try:
-        from aegis.config import _CONFIG_FILE, get_client_config, load_config
+    from aegis.config import _CONFIG_DIR, _CONFIG_FILE, get_client_config, load_config
 
+    try:
         cfg = load_config()
         client_cfg = get_client_config(cfg)
         if not client_cfg:
-            results.append({"name": "Config", "status": "FAIL",
-                            "detail": f"{_CONFIG_FILE} missing or empty — run: aegis init"})
+            if fix:
+                try:
+                    detail = _auto_create_config()
+                    # Re-load after auto-create
+                    cfg = load_config()
+                    client_cfg = get_client_config(cfg)
+                    results.append({"name": "Config", "status": "OK", "detail": detail})
+                except Exception as exc:
+                    msg = f"Auto-create failed: {str(exc)[:60]}"
+                    results.append({"name": "Config", "status": "FAIL", "detail": msg})
+                    return results
+            else:
+                results.append({"name": "Config", "status": "FAIL",
+                                "detail": f"{_CONFIG_FILE} missing or empty — run: aegis init"
+                                          " (or: aegis doctor --fix)"})
+                return results  # can't continue without config
         else:
             cid = client_cfg.get("canister_id", "?")
             kid = client_cfg.get("api_key_id", "?")
@@ -50,13 +164,20 @@ def run_doctor(
             size = pk_path.stat().st_size
             results.append({"name": "Private Key", "status": "OK",
                             "detail": f"{pk_path} ({size} bytes)"})
+        elif fix:
+            try:
+                detail = _auto_generate_key(pk_path)
+                results.append({"name": "Private Key", "status": "OK", "detail": detail})
+            except Exception as exc:
+                msg = f"Auto-keygen failed: {str(exc)[:60]}"
+                results.append({"name": "Private Key", "status": "FAIL", "detail": msg})
         else:
             candidates = _find_key_candidates(pk_path.parent)
             detail = f"{pk_path} not found"
             if candidates:
                 detail += f" — found nearby: {', '.join(c.name for c in candidates[:3])}"
             else:
-                detail += f" — run: aegis keygen {pk_path}"
+                detail += " — use --fix to auto-generate"
             results.append({"name": "Private Key", "status": "FAIL", "detail": detail})
     else:
         results.append({"name": "Private Key", "status": "FAIL",
@@ -94,8 +215,6 @@ def run_doctor(
                         "detail": "No canister_id configured — run: aegis init"})
 
     # 4. Spill queue
-    from aegis.config import _CONFIG_DIR
-
     spill_dir = _CONFIG_DIR / "spill"
     spill_entry_count = 0
     if spill_dir.is_dir():
@@ -117,7 +236,25 @@ def run_doctor(
         results.append({"name": "Spill", "status": "WARN",
                         "detail": f"{spill_entry_count} pending entries — use --fix to drain"})
 
-    # 5. Deferred verifications
+    # 5. MCP queue (per-PID + orphan detection)
+    own_depth, orphan_count, orphan_files = _scan_mcp_queues(_CONFIG_DIR)
+    total_mcp = own_depth + orphan_count
+    if total_mcp == 0:
+        results.append({"name": "MCP Queue", "status": "OK", "detail": "0 pending entries"})
+    elif orphan_count > 0 and fix:
+        adopted = _adopt_orphan_queues(orphan_files, _CONFIG_DIR)
+        remaining = own_depth  # adopted goes to recovery file, counts as own-family
+        detail = f"Adopted {adopted} orphan entries, {remaining} live-queue pending"
+        results.append({"name": "MCP Queue", "status": "OK", "detail": detail})
+    elif orphan_count > 0:
+        detail = (f"{total_mcp} pending ({orphan_count} orphan from "
+                  f"{len(orphan_files)} dead PIDs) — use --fix to adopt")
+        results.append({"name": "MCP Queue", "status": "WARN", "detail": detail})
+    else:
+        results.append({"name": "MCP Queue", "status": "OK",
+                        "detail": f"{own_depth} pending in live queue(s)"})
+
+    # 6. Deferred verifications
     if deferred_count > 0:
         if fix and _transport:
             try:
@@ -131,7 +268,7 @@ def run_doctor(
             detail = f"{deferred_count} pending — use --fix to trigger batch verify"
             results.append({"name": "Deferred", "status": "WARN", "detail": detail})
 
-    # 6. SDK version
+    # 7. SDK version
     try:
         from aegis import __version__
         results.append({"name": "SDK", "status": "OK", "detail": f"v{__version__}"})

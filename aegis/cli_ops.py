@@ -1,4 +1,4 @@
-"""aegis.cli_ops -- Operational CLI commands (deploy-check, doctor)."""
+"""aegis.cli_ops -- Operational CLI commands (deploy-check, doctor, profiles)."""
 
 from __future__ import annotations
 
@@ -15,6 +15,65 @@ def _cmd_doctor(args: list[str]) -> None:
     canister_id = filtered[0] if filtered else None
     code = doctor_main(canister_id=canister_id, fix=fix)
     sys.exit(code)
+
+
+def _cmd_profiles(args: list[str]) -> None:
+    """List configured profiles and show the active one.
+
+    Usage:
+        aegis profiles              List all profiles, mark the active one
+        aegis profiles --active     Print only the active profile name (CI-friendly)
+    """
+    import os
+
+    from aegis.config import (
+        _CONFIG_FILE,
+        _get_active_profile,
+        _load_toml,
+        get_client_config,
+        list_profiles,
+        load_config,
+    )
+
+    # --active: machine-readable single-line output
+    if "--active" in args:
+        active = _get_active_profile()
+        print(active or "")
+        return
+
+    raw = _load_toml(_CONFIG_FILE)
+    profiles = list_profiles(raw)
+    active = _get_active_profile()
+
+    print()
+    print("=== Aegis Profiles ===")
+    print()
+    print(f"  Config file:     {_CONFIG_FILE}")
+    print(f"  Active profile:  {active or '(none — using top-level [client])'}")
+    if os.environ.get("AEGIS_PROFILE"):
+        print(f"  AEGIS_PROFILE:   {os.environ['AEGIS_PROFILE']}")
+    print()
+
+    top_client = get_client_config(raw)
+    if top_client:
+        top_cid = top_client.get("canister_id", "?")
+        top_key = top_client.get("api_key_id", "?")
+        marker = "*" if not active else " "
+        print(f"  {marker} (default)     canister={top_cid[:12]}..., key={top_key}")
+
+    if not profiles:
+        print("  (no [profiles.*] sections defined)")
+    else:
+        for name in profiles:
+            merged = load_config(profile=name)
+            client = get_client_config(merged)
+            cid = client.get("canister_id", "?")
+            kid = client.get("api_key_id", "?")
+            marker = "*" if name == active else " "
+            print(f"  {marker} {name:<12} canister={cid[:12]}..., key={kid}")
+    print()
+    print("  Set via env:  export AEGIS_PROFILE=<name>")
+    print()
 
 
 def _cmd_deploy_check(args: list[str]) -> None:

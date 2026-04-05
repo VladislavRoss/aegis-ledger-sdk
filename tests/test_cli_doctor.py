@@ -176,6 +176,161 @@ class TestRunDoctor:
         assert "SECRET" not in all_output
 
 
+# ── doctor --fix auto-repair ──────────────────────────────────────────────
+
+
+class TestDoctorFix:
+    def test_fix_creates_config_when_missing(self, tmp_path: Path):
+        """P47-B2: --fix auto-creates minimal config.toml when missing."""
+        config_file = tmp_path / "config.toml"
+        assert not config_file.exists()
+        with patch("aegis.config._CONFIG_FILE", config_file), \
+             patch("aegis.config._CONFIG_DIR", tmp_path):
+            from aegis.doctor import run_doctor
+            results = run_doctor(fix=True)
+
+        assert config_file.exists(), "config.toml should be auto-created"
+        config_r = next(r for r in results if r["name"] == "Config")
+        assert config_r["status"] == "OK"
+        assert "auto-created" in config_r["detail"].lower()
+        content = config_file.read_text(encoding="utf-8")
+        assert "toqqq-lqaaa-aaaae-afc2a-cai" in content
+        assert "ak_" in content
+
+    def test_no_fix_leaves_missing_config_failed(self, tmp_path: Path):
+        """Without --fix, missing config stays FAIL and hints at --fix."""
+        config_file = tmp_path / "config.toml"
+        with patch("aegis.config._CONFIG_FILE", config_file), \
+             patch("aegis.config._CONFIG_DIR", tmp_path):
+            from aegis.doctor import run_doctor
+            results = run_doctor(fix=False)
+
+        config_r = next(r for r in results if r["name"] == "Config")
+        assert config_r["status"] == "FAIL"
+        assert "--fix" in config_r["detail"]
+        assert not config_file.exists()
+
+    def test_fix_generates_key_when_missing(self, tmp_path: Path):
+        """P47-B2: --fix auto-generates Ed25519 key when file missing."""
+        key_file = tmp_path / "agent_key.pem"
+        config_file = tmp_path / "config.toml"
+        config_file.write_text(
+            f'[client]\ncanister_id = "cid"\napi_key_id = "ak"\n'
+            f'private_key_path = "{key_file.as_posix()}"\n',
+            encoding="utf-8",
+        )
+        assert not key_file.exists()
+        with patch("aegis.config._CONFIG_FILE", config_file), \
+             patch("aegis.config._CONFIG_DIR", tmp_path):
+            from aegis.doctor import run_doctor
+            results = run_doctor(fix=True)
+
+        assert key_file.exists(), "key file should be auto-generated"
+        key_r = next(r for r in results if r["name"] == "Private Key")
+        assert key_r["status"] == "OK"
+        assert "auto-generated" in key_r["detail"].lower()
+        # PEM header sanity
+        content = key_file.read_text(encoding="utf-8")
+        assert "PRIVATE KEY" in content
+
+    def test_no_fix_leaves_missing_key_failed(self, tmp_path: Path):
+        """Without --fix, missing key stays FAIL and hints at --fix."""
+        key_file = tmp_path / "nonexistent.pem"
+        config_file = tmp_path / "config.toml"
+        config_file.write_text(
+            f'[client]\ncanister_id = "cid"\napi_key_id = "ak"\n'
+            f'private_key_path = "{key_file.as_posix()}"\n',
+            encoding="utf-8",
+        )
+        with patch("aegis.config._CONFIG_FILE", config_file), \
+             patch("aegis.config._CONFIG_DIR", tmp_path):
+            from aegis.doctor import run_doctor
+            results = run_doctor(fix=False)
+
+        key_r = next(r for r in results if r["name"] == "Private Key")
+        assert key_r["status"] == "FAIL"
+        assert not key_file.exists()
+
+
+# ── doctor MCP queue check ────────────────────────────────────────────────
+
+
+class TestDoctorMcpQueue:
+    def test_mcp_queue_empty(self, tmp_path: Path):
+        """No mcp_queue_*.jsonl files → 0 pending."""
+        key_file = tmp_path / "agent_key.pem"
+        key_file.write_text("fake-pem-content", encoding="utf-8")
+        config_file = tmp_path / "config.toml"
+        config_file.write_text(
+            f'[client]\ncanister_id = "cid"\napi_key_id = "ak"\n'
+            f'private_key_path = "{key_file.as_posix()}"\n',
+            encoding="utf-8",
+        )
+        with patch("aegis.config._CONFIG_FILE", config_file), \
+             patch("aegis.config._CONFIG_DIR", tmp_path):
+            from aegis.doctor import run_doctor
+            results = run_doctor()
+
+        mcp_r = next(r for r in results if r["name"] == "MCP Queue")
+        assert mcp_r["status"] == "OK"
+        assert "0 pending" in mcp_r["detail"]
+
+    def test_mcp_queue_detects_orphans(self, tmp_path: Path):
+        """P47-B2: dead-PID queue files show as orphan WARN."""
+        # PID 1 is init on Unix, and on Windows it's the System Idle Process.
+        # We use a very high PID that is almost certainly not running.
+        dead_pid = 999999
+        orphan = tmp_path / f"mcp_queue_{dead_pid}.jsonl"
+        orphan.write_text('{"a":1}\n{"a":2}\n', encoding="utf-8")
+        key_file = tmp_path / "agent_key.pem"
+        key_file.write_text("fake-pem-content", encoding="utf-8")
+        config_file = tmp_path / "config.toml"
+        config_file.write_text(
+            f'[client]\ncanister_id = "cid"\napi_key_id = "ak"\n'
+            f'private_key_path = "{key_file.as_posix()}"\n',
+            encoding="utf-8",
+        )
+        with patch("aegis.config._CONFIG_FILE", config_file), \
+             patch("aegis.config._CONFIG_DIR", tmp_path):
+            from aegis.doctor import run_doctor
+            results = run_doctor(fix=False)
+
+        mcp_r = next(r for r in results if r["name"] == "MCP Queue")
+        assert mcp_r["status"] == "WARN"
+        assert "orphan" in mcp_r["detail"].lower()
+        assert "--fix" in mcp_r["detail"]
+        # orphan file should still exist (no fix)
+        assert orphan.exists()
+
+    def test_mcp_queue_fix_adopts_orphans(self, tmp_path: Path):
+        """P47-B2: --fix merges orphan queues into mcp_queue_recovered.jsonl."""
+        dead_pid = 999999
+        orphan = tmp_path / f"mcp_queue_{dead_pid}.jsonl"
+        orphan.write_text('{"a":1}\n{"a":2}\n{"a":3}\n', encoding="utf-8")
+        key_file = tmp_path / "agent_key.pem"
+        key_file.write_text("fake-pem-content", encoding="utf-8")
+        config_file = tmp_path / "config.toml"
+        config_file.write_text(
+            f'[client]\ncanister_id = "cid"\napi_key_id = "ak"\n'
+            f'private_key_path = "{key_file.as_posix()}"\n',
+            encoding="utf-8",
+        )
+        with patch("aegis.config._CONFIG_FILE", config_file), \
+             patch("aegis.config._CONFIG_DIR", tmp_path):
+            from aegis.doctor import run_doctor
+            results = run_doctor(fix=True)
+
+        mcp_r = next(r for r in results if r["name"] == "MCP Queue")
+        assert mcp_r["status"] == "OK"
+        assert "adopted" in mcp_r["detail"].lower()
+        # orphan file gone, recovered file contains entries
+        assert not orphan.exists()
+        recovered = tmp_path / "mcp_queue_recovered.jsonl"
+        assert recovered.exists()
+        content = recovered.read_text(encoding="utf-8").strip()
+        assert content.count("\n") + 1 == 3
+
+
 # ── aegis init --quickstart ────────────────────────────────────────────────
 
 
