@@ -3,16 +3,12 @@
 from __future__ import annotations
 
 import contextlib
-import functools
-import inspect
 import logging
 import sys
 import threading
 import time
 import uuid
-from collections.abc import Callable, Generator
-from contextlib import contextmanager
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -24,36 +20,24 @@ from aegis.crypto import (
     canonical_json,
     compute_chain_hash,
     create_scheme,
-    extract_otel_context,
+    extract_otel_context,  # noqa: F401 — re-export for test patches
     load_mldsa65_private_key,
     load_private_key,
     load_slhdsa128s_private_key,
     redact_pii_data,
-    sha256_json,
-    truncate_preview,
+    sha256_json,  # noqa: F401 — re-export for test patches
+    truncate_preview,  # noqa: F401 — re-export for test patches
 )
+from aegis.entry_builder import build_candid_args, prepare_entry
 from aegis.errors import translate_error
-from aegis.transport import (
-    CanisterTransport,
-    TransportConfig,
-    _build_add_ledger_entry_v2_args,
-)
-from aegis.types import (
-    ActionContext,
-    ActionPayload,
-    ActionStatus,
-    ActionType,
-    Environment,
-    JsonValue,
-    LogEntry,
-)
+from aegis.trace import TraceMixin
+from aegis.transport import CanisterTransport, TransportConfig
+from aegis.types import ActionStatus, ActionType, Environment, JsonValue
 
 logger = logging.getLogger("aegis")
 
-F = TypeVar("F", bound=Callable[..., Any])
 
-
-class AegisClient(CanisterOpsMixin):
+class AegisClient(TraceMixin, CanisterOpsMixin):
     """
     Client for logging AI agent actions to the Aegis Ledger.
 
@@ -421,148 +405,7 @@ class AegisClient(CanisterOpsMixin):
         return self._transport.call_query("getOrgStats", [])
 
 
-    # PUBLIC API: The @trace decorator
-
-    def trace(
-        self,
-        action_type: str | ActionType = ActionType.TOOL_CALL,
-        tool_name: str | None = None,
-        capture_output: bool = True,
-        metadata: dict[str, str] | None = None,
-    ) -> Callable[[F], F]:
-        """
-        Decorator that automatically logs function execution to Aegis.
-
-        Usage:
-            @client.trace()
-            def search_database(query: str) -> list[dict]:
-                return db.search(query)
-
-            @client.trace(action_type="decision", tool_name="route_selector")
-            def pick_next_action(state: dict) -> str:
-                return "search" if state["needs_data"] else "respond"
-
-        The decorator:
-          1. Captures all function arguments as the input payload.
-          2. Captures the return value as the output payload.
-          3. Measures wall-clock execution time.
-          4. Catches and re-raises exceptions (logging them as errors).
-          5. Maintains parent-child relationships when traced functions
-             call other traced functions.
-
-        Args:
-            action_type: The action type category. String or ActionType enum.
-            tool_name: Override the tool name. Defaults to the function's
-                       qualified name.
-            capture_output: If False, output is logged as {} (useful for
-                           functions returning sensitive data).
-            metadata: Additional metadata for this specific trace.
-        """
-        if isinstance(action_type, str):
-            action_type = ActionType(action_type)
-
-        def decorator(func: F) -> F:
-            resolved_tool = tool_name or func.__qualname__
-
-            def _build_input(func_: Any, args: Any, kwargs: Any) -> dict[str, Any]:
-                sig = inspect.signature(func_)
-                bound = sig.bind(*args, **kwargs)
-                bound.apply_defaults()
-                return dict(bound.arguments)
-
-            def _log_success(
-                input_data: dict[str, Any], result: Any, elapsed: int,
-            ) -> None:
-                output_data = result if capture_output else {}
-                self._log(
-                    action_type=action_type,
-                    tool=resolved_tool,
-                    input_data=input_data,
-                    output_data=output_data,
-                    duration_ms=elapsed,
-                    status=ActionStatus.SUCCESS,
-                    reasoning="",
-                    confidence=0.0,
-                    metadata=metadata,
-                )
-
-            def _log_failure(
-                input_data: dict[str, Any], error: Exception, elapsed: int,
-            ) -> None:
-                self.log_error(
-                    tool=resolved_tool,
-                    input_data=input_data,
-                    error=error,
-                    duration_ms=elapsed,
-                    metadata=metadata,
-                )
-
-            if inspect.iscoroutinefunction(func):
-                @functools.wraps(func)
-                async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
-                    input_data = _build_input(func, args, kwargs)
-                    start_ms = int(time.time() * 1000)
-                    try:
-                        result = await func(*args, **kwargs)
-                        _log_success(input_data, result, int(time.time() * 1000) - start_ms)
-                        return result
-                    except Exception as e:
-                        _log_failure(input_data, e, int(time.time() * 1000) - start_ms)
-                        raise
-
-                return async_wrapper  # type: ignore[return-value]
-
-            @functools.wraps(func)
-            def wrapper(*args: Any, **kwargs: Any) -> Any:
-                input_data = _build_input(func, args, kwargs)
-                start_ms = int(time.time() * 1000)
-                try:
-                    result = func(*args, **kwargs)
-                    _log_success(input_data, result, int(time.time() * 1000) - start_ms)
-                    return result
-                except Exception as e:
-                    _log_failure(input_data, e, int(time.time() * 1000) - start_ms)
-                    raise  # Always re-raise — we observe, never interfere
-
-            return wrapper  # type: ignore[return-value]
-
-        return decorator
-
-    # PUBLIC API: Context manager for parent-child grouping
-
-    @contextmanager
-    def span(
-        self,
-        name: str,
-        action_type: ActionType = ActionType.DECISION,
-        reasoning: str = "",
-        metadata: dict[str, str] | None = None,
-    ) -> Generator[str, None, None]:
-        """
-        Context manager that groups nested actions under a parent.
-
-        Usage:
-            with client.span("process_order", reasoning="Customer checkout flow") as span_id:
-                client.log_tool_call("inventory.check", ...)
-                client.log_tool_call("payment.charge", ...)
-                # Both calls have parent_action_id = span_id
-
-        Yields the action_id of the span's own log entry.
-        """
-        action_id = self.log_decision(
-            reasoning=reasoning or f"Entering span: {name}",
-            confidence=1.0,
-            input_data={"span_name": name},
-            metadata=metadata,
-        )
-
-        with self._lock:
-            self._action_stack.append(action_id)
-        try:
-            yield action_id
-        finally:
-            with self._lock:
-                self._action_stack.pop()
+    # trace() and span() provided by TraceMixin
 
     # PUBLIC API: Session and state management
 
@@ -700,100 +543,6 @@ class AegisClient(CanisterOpsMixin):
 
     # INTERNAL: Core logging implementation
 
-    def _prepare_entry(
-        self,
-        action_type: ActionType,
-        tool: str,
-        input_data: JsonValue,
-        output_data: JsonValue,
-        duration_ms: int,
-        status: ActionStatus,
-        reasoning: str,
-        confidence: float,
-        merged_metadata: dict[str, str],
-        now_ms: int,
-        parent_id: str,
-    ) -> LogEntry:
-        """Build a LogEntry from validated, PII-redacted inputs (called inside lock)."""
-        otel_trace_id, otel_span_id, otel_parent_span_id = extract_otel_context()
-        return LogEntry(
-            agent_id=self._agent_id,
-            session_id=self._session_id,
-            sequence_number=self._sequence,
-            action=ActionPayload(
-                type=action_type,
-                tool=tool,
-                input_hash=sha256_json(input_data),
-                output_hash=sha256_json(output_data),
-                input_preview=truncate_preview(input_data),
-                output_preview=truncate_preview(output_data),
-                duration_ms=duration_ms,
-                status=status,
-            ),
-            context=ActionContext(
-                parent_action_id=parent_id,
-                decision_reasoning=reasoning,
-                confidence_score=confidence,
-            ),
-            environment=self._environment,
-            metadata=merged_metadata,
-            client_timestamp_ms=now_ms,
-            sdk_version=__version__,
-            api_key_id=self._api_key_id,
-            otel_trace_id=otel_trace_id,
-            otel_span_id=otel_span_id,
-            otel_parent_span_id=otel_parent_span_id,
-            parent_session_id=self._parent_session_id,
-        )
-
-    def _build_candid_args(
-        self,
-        entry: LogEntry,
-        chain_hash: str,
-        previous_chain_hash: str,
-        action_id: str,
-        payload_bytes: bytes,
-    ) -> list[Any]:
-        """Build a single Candid Record argument for addLedgerEntryV2."""
-        metadata_json = ""
-        if entry.metadata:
-            import json as _json
-            metadata_json = _json.dumps(entry.metadata, sort_keys=True)
-        return _build_add_ledger_entry_v2_args(
-            action_id=action_id,
-            org_id=self._org_id,
-            agent_id=entry.agent_id,
-            session_id=entry.session_id,
-            sequence_number=entry.sequence_number,
-            action_type=entry.action.type.value,
-            tool=entry.action.tool,
-            input_hash=entry.action.input_hash,
-            output_hash=entry.action.output_hash,
-            input_preview="",
-            output_preview="",
-            duration_ms=entry.action.duration_ms,
-            status=entry.action.status.value,
-            parent_action_id=entry.context.parent_action_id,
-            decision_reasoning=entry.context.decision_reasoning,
-            confidence_score=entry.context.confidence_score,
-            framework=entry.environment.framework,
-            model_id=entry.environment.model_id,
-            client_timestamp_ms=entry.client_timestamp_ms,
-            payload_signature=entry.payload_signature,
-            chain_hash=chain_hash,
-            previous_chain_hash=previous_chain_hash,
-            payload_hex=payload_bytes.hex(),
-            key_id=self._api_key_id,
-            metadata=metadata_json,
-            sdk_version=entry.sdk_version,
-            otel_trace_id=entry.otel_trace_id,
-            otel_span_id=entry.otel_span_id,
-            otel_parent_span_id=entry.otel_parent_span_id,
-            cost_usd=entry.cost_usd,
-            token_count=entry.token_count,
-            parent_session_id=entry.parent_session_id,
-        )
-
     def _log(
         self,
         action_type: ActionType,
@@ -852,9 +601,25 @@ class AegisClient(CanisterOpsMixin):
         with self._lock:
             parent_id = self._action_stack[-1] if self._action_stack else ""
 
-            entry = self._prepare_entry(
-                action_type, tool, input_data, output_data, duration_ms,
-                status, reasoning, confidence, merged_metadata, now_ms, parent_id,
+            entry = prepare_entry(
+                agent_id=self._agent_id,
+                session_id=self._session_id,
+                sequence_number=self._sequence,
+                action_type=action_type,
+                tool=tool,
+                input_data=input_data,
+                output_data=output_data,
+                duration_ms=duration_ms,
+                status=status,
+                reasoning=reasoning,
+                confidence=confidence,
+                merged_metadata=merged_metadata,
+                now_ms=now_ms,
+                parent_id=parent_id,
+                environment=self._environment,
+                sdk_version=__version__,
+                api_key_id=self._api_key_id,
+                parent_session_id=self._parent_session_id,
             )
 
             # Sign the payload
@@ -867,8 +632,14 @@ class AegisClient(CanisterOpsMixin):
             chain_hash = compute_chain_hash(previous_chain_hash, payload_bytes)
             local_action_id = f"act_{uuid.uuid4().hex[:16]}"
 
-            candid_args = self._build_candid_args(
-                entry, chain_hash, previous_chain_hash, local_action_id, payload_bytes,
+            candid_args = build_candid_args(
+                entry=entry,
+                chain_hash=chain_hash,
+                previous_chain_hash=previous_chain_hash,
+                action_id=local_action_id,
+                payload_bytes=payload_bytes,
+                org_id=self._org_id,
+                api_key_id=self._api_key_id,
             )
 
             try:
@@ -896,8 +667,14 @@ class AegisClient(CanisterOpsMixin):
                 if "Sequence number must be strictly increasing" in str(e):
                     self._sync_sequence_from_canister()
                     entry.sequence_number = self._sequence
-                    candid_args = self._build_candid_args(
-                        entry, chain_hash, previous_chain_hash, local_action_id, payload_bytes,
+                    candid_args = build_candid_args(
+                        entry=entry,
+                        chain_hash=chain_hash,
+                        previous_chain_hash=previous_chain_hash,
+                        action_id=local_action_id,
+                        payload_bytes=payload_bytes,
+                        org_id=self._org_id,
+                        api_key_id=self._api_key_id,
                     )
                     try:
                         result = self._transport.call_update("addLedgerEntryV2", candid_args)

@@ -3,8 +3,8 @@ from setuptools import setup
 
 setup(
     name="aegis-ledger-sdk",
-    version="0.2.5",
+    version="0.3.4",
     package_dir={"aegis": "."},
     packages=["aegis"],
-    install_requires=["cryptography>=42.0"],
+    install_requires=["cryptography>=42.0", "ic-py>=1.0"],
 )
