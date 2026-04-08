@@ -127,13 +127,12 @@ def _cmd_deploy_check(args: list[str]) -> None:
         from aegis.client import AegisClient
 
         client = AegisClient.from_config()
-        result = client.log_tool_call(
+        action_id = client.log_tool_call(
             "aegis.deploy-check",
             {"check": True, "canister": cid},
             {"status": "ok"},
             duration_ms=0,
         )
-        action_id = result.get("action_id", "") if result else ""
         client.close()
         if not action_id:
             print("  [FAIL] No action_id returned")
@@ -146,7 +145,9 @@ def _cmd_deploy_check(args: list[str]) -> None:
     # Step 3: Verify on-chain
     print("  [3/3] Verifying on-chain...")
     try:
-        raw = transport.call_query("verifyEntry", [action_id])
+        from ic.candid import Types  # type: ignore[import-untyped]
+
+        raw = transport.call_query("verifyEntry", [{"type": Types.Text, "value": action_id}])
         mapped = _map_candid_keys(raw, _VERIFY_HASH_MAP)
         is_valid = mapped.get("isValid", False)
         if is_valid:

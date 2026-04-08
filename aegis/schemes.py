@@ -14,14 +14,36 @@ Each scheme is bound to a private key at construction time and exposes
 
 from __future__ import annotations
 
+import contextlib
 from pathlib import Path
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import (
     Ed25519PrivateKey,
     Ed25519PublicKey,
 )
+
+# ── Memory hygiene ───────────────────────────────────────────────────────
+
+
+def _zeroize(ba: bytearray) -> None:
+    """Overwrite a bytearray's contents with zeros in-place.
+
+    Best-effort memory zeroing for post-quantum private keys. Python's
+    garbage collector does not zero freed memory, so PQ secret key bytes
+    can linger in RAM until overwritten by other allocations. This helper
+    mutates the buffer to all-zero bytes immediately after use.
+
+    Limitations:
+      - Only works on bytearray (mutable buffer protocol).
+      - Does not cover transient bytes(...) copies made when calling into
+        C extensions (e.g. pqcrypto). Those are GC'd but not zeroed.
+      - Does not protect against swap-to-disk or core dumps.
+    """
+    for i in range(len(ba)):
+        ba[i] = 0
+
 
 # ── Protocol ─────────────────────────────────────────────────────────────
 
@@ -99,6 +121,21 @@ class Ed25519Scheme:
     def signature_size(self) -> int:
         return 64
 
+    def zeroize(self) -> None:
+        """No-op for API consistency.
+
+        Ed25519 private keys are held by cryptography.io's OpenSSL-backed
+        context. The library zeros the native memory on release; Python's
+        side holds no raw key material to overwrite.
+        """
+        return
+
+    def __enter__(self) -> Ed25519Scheme:
+        return self
+
+    def __exit__(self, *exc: Any) -> None:
+        self.zeroize()
+
 
 # ── ML-DSA-65 ────────────────────────────────────────────────────────────
 
@@ -123,7 +160,7 @@ class MLDSA65Scheme:
             raise ValueError(
                 f"ML-DSA-65 secret key must be 4032 bytes, got {len(private_key_bytes)}"
             )
-        self._sk = private_key_bytes
+        self._sk: bytearray = bytearray(private_key_bytes)
         self._sign = _sign
         self._verify = _verify
 
@@ -132,7 +169,7 @@ class MLDSA65Scheme:
         return "ml-dsa-65"
 
     def sign(self, payload: bytes) -> str:
-        sig = self._sign(self._sk, payload)
+        sig = self._sign(bytes(self._sk), payload)
         return f"ml-dsa-65:{sig.hex()}"
 
     def verify(self, payload: bytes, signature: str, public_key_bytes: bytes) -> bool:
@@ -154,6 +191,21 @@ class MLDSA65Scheme:
     @property
     def signature_size(self) -> int:
         return 3309
+
+    def zeroize(self) -> None:
+        """Securely overwrite the private key material with zeros."""
+        _zeroize(self._sk)
+
+    def __del__(self) -> None:
+        # best-effort during GC
+        with contextlib.suppress(Exception):
+            _zeroize(self._sk)
+
+    def __enter__(self) -> MLDSA65Scheme:
+        return self
+
+    def __exit__(self, *exc: Any) -> None:
+        self.zeroize()
 
 
 # ── SLH-DSA-128s ─────────────────────────────────────────────────────────
@@ -187,7 +239,7 @@ class SLHDSA128sScheme:
             raise ValueError(
                 f"SLH-DSA-128s secret key must be 64 bytes, got {len(private_key_bytes)}"
             )
-        self._sk = private_key_bytes
+        self._sk: bytearray = bytearray(private_key_bytes)
         self._sign = _sign
         self._verify = _verify
 
@@ -196,7 +248,7 @@ class SLHDSA128sScheme:
         return "slh-dsa-128s"
 
     def sign(self, payload: bytes) -> str:
-        sig = self._sign(self._sk, payload)
+        sig = self._sign(bytes(self._sk), payload)
         return f"slh-dsa-128s:{sig.hex()}"
 
     def verify(self, payload: bytes, signature: str, public_key_bytes: bytes) -> bool:
@@ -218,6 +270,20 @@ class SLHDSA128sScheme:
     @property
     def signature_size(self) -> int:
         return 7856
+
+    def zeroize(self) -> None:
+        """Securely overwrite the private key material with zeros."""
+        _zeroize(self._sk)
+
+    def __del__(self) -> None:
+        with contextlib.suppress(Exception):
+            _zeroize(self._sk)
+
+    def __enter__(self) -> SLHDSA128sScheme:
+        return self
+
+    def __exit__(self, *exc: Any) -> None:
+        self.zeroize()
 
 
 # ── ML-DSA-87 ────────────────────────────────────────────────────────────
@@ -247,7 +313,7 @@ class MLDSA87Scheme:
             raise ValueError(
                 f"ML-DSA-87 secret key must be 4896 bytes, got {len(private_key_bytes)}"
             )
-        self._sk = private_key_bytes
+        self._sk: bytearray = bytearray(private_key_bytes)
         self._sign = _sign
         self._verify = _verify
 
@@ -256,7 +322,7 @@ class MLDSA87Scheme:
         return "ml-dsa-87"
 
     def sign(self, payload: bytes) -> str:
-        sig = self._sign(self._sk, payload)
+        sig = self._sign(bytes(self._sk), payload)
         return f"ml-dsa-87:{sig.hex()}"
 
     def verify(self, payload: bytes, signature: str, public_key_bytes: bytes) -> bool:
@@ -278,6 +344,20 @@ class MLDSA87Scheme:
     @property
     def signature_size(self) -> int:
         return 4627
+
+    def zeroize(self) -> None:
+        """Securely overwrite the private key material with zeros."""
+        _zeroize(self._sk)
+
+    def __del__(self) -> None:
+        with contextlib.suppress(Exception):
+            _zeroize(self._sk)
+
+    def __enter__(self) -> MLDSA87Scheme:
+        return self
+
+    def __exit__(self, *exc: Any) -> None:
+        self.zeroize()
 
 
 # ── Hybrid ───────────────────────────────────────────────────────────────
@@ -335,6 +415,20 @@ class HybridScheme:
     @property
     def signature_size(self) -> int:
         return 3373  # 64 + 3309
+
+    def zeroize(self) -> None:
+        """Securely overwrite the ML-DSA-65 private key material.
+
+        The Ed25519 private key is held by cryptography.io's OpenSSL-backed
+        context and is zeroed by that library's native allocator on release.
+        """
+        self._mldsa65.zeroize()
+
+    def __enter__(self) -> HybridScheme:
+        return self
+
+    def __exit__(self, *exc: Any) -> None:
+        self.zeroize()
 
 
 # ── Key generation / loading ─────────────────────────────────────────────

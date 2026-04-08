@@ -13,6 +13,10 @@ When autonomous agents take actions, their logs become verifiable audit evidence
 pip install aegis-ledger-sdk
 ```
 
+For MCP server support: `pip install aegis-ledger-sdk[mcp]`
+For post-quantum signatures: `pip install aegis-ledger-sdk[pq]`
+For everything: `pip install aegis-ledger-sdk[all]`
+
 ## The Problem
 
 Your AI agent just autonomously called a payment API, transferred $47,000, and the client says it wasn't authorized. Your logs are in CloudWatch. The client's lawyer asks: **"Can you prove these logs haven't been edited since the incident?"**
@@ -90,12 +94,14 @@ with AegisClient(...) as client:
 # Spill buffer drained on exit
 ```
 
-## KYA — Know Your Agent
+## KYA — Know Your Agent (Roadmap)
+
+> **Note:** `register_agent()` and `update_agent_profile()` are currently available via `CanisterOps` only. A convenience wrapper on the main `AegisClient` is planned.
 
 Register agent identity on-chain for transparent AI governance:
 
 ```python
-# Register an agent profile
+# Register an agent profile (via CanisterOps)
 client.register_agent(
     agent_id="agent-billing-v2",
     name="Billing Agent",

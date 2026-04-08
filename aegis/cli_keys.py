@@ -181,6 +181,176 @@ def cmd_register_key(args: list[str]) -> None:
             sys.exit(1)
 
 
+def cmd_claim_key(args: list[str]) -> None:
+    """Claim an API key via a Portal nonce (P47-B5/B6).
+
+    Flow: II user logs in Portal -> Dashboard "Link CLI" calls generatePortalNonce()
+    -> user copies nonce -> runs `aegis claim-key <key_id> --nonce <nonce> --key-file <path>`.
+    The key is owned by the II principal, signatures are produced with the CLI's PEM key.
+    """
+    from aegis.crypto import load_private_key
+
+    if not args:
+        print(
+            "Usage: aegis claim-key <key_id> --nonce <nonce> --key-file <path> "
+            "[--algorithm <algo>] [--permission full|query-only]"
+        )
+        sys.exit(1)
+
+    key_id = args[0]
+    nonce = ""
+    key_file = ""
+    algorithm = ""
+    permission = "full"
+
+    if "--nonce" in args:
+        idx = args.index("--nonce")
+        if idx + 1 < len(args):
+            nonce = args[idx + 1]
+    if "--key-file" in args:
+        idx = args.index("--key-file")
+        if idx + 1 < len(args):
+            key_file = args[idx + 1]
+    if "--algorithm" in args:
+        idx = args.index("--algorithm")
+        if idx + 1 < len(args):
+            algorithm = args[idx + 1]
+    if "--permission" in args:
+        idx = args.index("--permission")
+        if idx + 1 < len(args):
+            perm_val = args[idx + 1]
+            if perm_val not in ("full", "query-only"):
+                print("Error: --permission must be 'full' or 'query-only'")
+                sys.exit(1)
+            permission = "queryOnly" if perm_val == "query-only" else "full"
+
+    if not nonce:
+        print("Error: --nonce is required")
+        sys.exit(1)
+    if not key_file:
+        print("Error: --key-file is required")
+        sys.exit(1)
+
+    kf = Path(key_file)
+    if not kf.exists():
+        print(f"Error: Key file not found: {key_file}")
+        sys.exit(1)
+
+    # Auto-detect algorithm from extension if not specified
+    if not algorithm:
+        ext_map = {
+            ".pem": "ed25519",
+            ".mldsa65": "ml-dsa-65",
+            ".mldsa87": "ml-dsa-87",
+            ".slh": "slh-dsa-128s",
+        }
+        algorithm = ext_map.get(kf.suffix, "")
+        if not algorithm:
+            print(f"Error: Cannot detect algorithm from extension '{kf.suffix}'. Use --algorithm.")
+            sys.exit(1)
+
+    # Validate algorithm-extension consistency
+    valid_exts = {
+        "ed25519": [".pem"],
+        "ml-dsa-65": [".mldsa65"],
+        "ml-dsa-87": [".mldsa87"],
+        "slh-dsa-128s": [".slh"],
+        "hybrid": [".pem"],
+    }
+    if algorithm in valid_exts and kf.suffix not in valid_exts[algorithm]:
+        print(f"Error: Extension '{kf.suffix}' does not match algorithm '{algorithm}'.")
+        print(f"  Expected: {', '.join(valid_exts[algorithm])}")
+        sys.exit(1)
+
+    # Read public key (generate_keypair uses .with_suffix(".pub"))
+    pub_path = kf.with_suffix(".pub")
+    if not pub_path.exists():
+        print(f"Error: Public key not found: {pub_path}")
+        print("  Run 'aegis keygen' first to generate a keypair.")
+        sys.exit(1)
+    pub_hex = pub_path.read_text(encoding="utf-8").strip()
+
+    # Compute PoP signature (same as register-key)
+    pop_sig = ""
+    pop_msg = f"aegis-pop:{key_id}".encode()
+    try:
+        if algorithm == "ed25519":
+            sk = load_private_key(str(kf))
+            from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+            if isinstance(sk, Ed25519PrivateKey):
+                pop_sig = sk.sign(pop_msg).hex()
+        elif algorithm == "hybrid":
+            from aegis.config import load_config
+
+            cfg = load_config()
+            sk_path = cfg.get("signing", {}).get("signing_key_path", "")
+            if sk_path:
+                from aegis.schemes import create_scheme
+
+                ed_sk = load_private_key(str(kf))
+                ml_sk_bytes = Path(sk_path).read_bytes()
+                scheme = create_scheme("hybrid", (ed_sk, ml_sk_bytes))
+                pop_sig = scheme.sign(pop_msg)
+        else:
+            from aegis.schemes import create_scheme
+
+            sk_bytes = kf.read_bytes()
+            scheme = create_scheme(algorithm, sk_bytes)
+            pop_sig = scheme.sign(pop_msg)
+        print(f"  [OK] PoP computed for {key_id} ({algorithm})")
+    except Exception as e:
+        print(f"  [WARN] Could not compute PoP: {e}")
+
+    # Claim via canister endpoint
+    from aegis.cli_init import _call_claim_api_key_via_nonce
+
+    pem_path = kf if algorithm == "ed25519" else kf.parent / "agent_key.pem"
+    if not pem_path.exists():
+        print(f"  Error: Transport key not found: {pem_path}")
+        sys.exit(1)
+
+    from aegis.transport import CanisterTransport, TransportConfig
+
+    canister = "toqqq-lqaaa-aaaae-afc2a-cai"
+    try:
+        from aegis.config import get_client_config, load_config
+
+        cfg = load_config()
+        canister = get_client_config(cfg).get("canister_id", canister)
+    except Exception:
+        logger.debug("Config load failed, using defaults", exc_info=True)
+
+    transport = CanisterTransport(
+        TransportConfig(canister_id=canister, private_key_path=str(pem_path))
+    )
+
+    try:
+        _call_claim_api_key_via_nonce(
+            transport,
+            nonce,
+            key_id,
+            key_id,
+            pub_hex,
+            algorithm,
+            pop_sig,
+            "Claimed via aegis claim-key",
+            permission,
+        )
+        print(f"  [OK] Key {key_id} claimed on-chain ({algorithm})")
+    except Exception as e:
+        err = str(e)
+        if "already" in err.lower():
+            print(f"  [OK] Key {key_id} already registered")
+        elif "nonce" in err.lower():
+            print(f"  [FAIL] Nonce rejected: {err}")
+            print("  Generate a new nonce from the Portal ('Link CLI' button) and retry.")
+            sys.exit(1)
+        else:
+            print(f"  [FAIL] Claim failed: {err}")
+            sys.exit(1)
+
+
 def cmd_rotate_key(args: list[str]) -> None:
     """Rotate an API key: generate new → register → verify → update config → revoke old."""
     from aegis.config import get_client_config, load_config, write_config

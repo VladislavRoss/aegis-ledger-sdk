@@ -433,6 +433,46 @@ def _call_create_api_key(
     return transport._do_call("createApiKey", args, call_type="update")  # type: ignore[attr-defined]
 
 
+def _call_claim_api_key_via_nonce(
+    transport: object,
+    nonce: str,
+    key_id: str,
+    prefix: str,
+    pub_hex: str,
+    algorithm: str,
+    pop_sig: str,
+    description: str = "",
+    permission: str = "full",
+) -> dict:
+    """Claim an API key via a portal nonce (P47-B5 canister endpoint).
+
+    The orgId is extracted from the nonce by the canister, so the caller (CLI
+    PEM identity) can create a key owned by a different principal (the II user
+    who generated the nonce in the Portal). Never spilled/retried — same
+    rationale as _call_create_api_key.
+    """
+    from ic.candid import Types  # type: ignore[import-untyped]
+
+    perm_variant = {"full": None, "queryOnly": None}[permission]
+    perm_type = Types.Variant({"full": Types.Null, "queryOnly": Types.Null})
+
+    args = [
+        {"type": Types.Text, "value": nonce},
+        {"type": Types.Text, "value": key_id},
+        {"type": Types.Text, "value": prefix},
+        {"type": Types.Text, "value": pub_hex},
+        {"type": Types.Opt(Types.Text), "value": [algorithm] if algorithm else []},
+        {"type": Types.Opt(Types.Text), "value": [pop_sig] if pop_sig else []},
+        {"type": Types.Opt(Types.Int), "value": []},  # no expiry
+        {
+            "type": Types.Opt(Types.Text),
+            "value": [description] if description else [],
+        },
+        {"type": Types.Opt(perm_type), "value": [perm_variant] if permission != "full" else []},
+    ]
+    return transport._do_call("claimApiKeyViaNonce", args, call_type="update")  # type: ignore[attr-defined]
+
+
 # --- Key Detection Helpers ---
 
 

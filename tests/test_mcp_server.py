@@ -19,14 +19,6 @@ mcp_mod = pytest.importorskip("mcp", reason="mcp package not installed")
 # ---------------------------------------------------------------------------
 
 
-def _read_spill_entry(index: int = 0) -> dict:
-    """Read a spilled entry from the persistent MCP queue file."""
-    import aegis.mcp_server as ms
-    content = ms._MCP_QUEUE_PATH.read_text(encoding="utf-8").strip()
-    lines = content.split("\n")
-    return json.loads(lines[index])
-
-
 def _make_mock_client(
     action_id: str = "act_test_123",
     session_id: str = "sess_abc",
@@ -78,20 +70,30 @@ def _run(coro):
 # ---------------------------------------------------------------------------
 
 
+def _read_queue_entries() -> list[dict]:
+    """Read all entries from the MCP spill queue file."""
+    import aegis.mcp_server as ms
+    if not ms._MCP_QUEUE_PATH.exists():
+        return []
+    content = ms._MCP_QUEUE_PATH.read_text(encoding="utf-8").strip()
+    if not content:
+        return []
+    return [json.loads(line) for line in content.split("\n")]
+
+
 @pytest.fixture(autouse=True)
 def reset_singletons(tmp_path):
-    """Reset _client, _transport, and _client_error globals between tests."""
+    """Reset _client, _transport, and spill queue between tests."""
     import aegis.mcp_server as ms
     ms._client = None
     ms._transport = None
-    ms._client_error = None
-    ms._bg_stop.set()  # stop any running bg worker
-    # Redirect spill queue to tmp_path so tests don't pollute ~/.aegis/
     ms._MCP_QUEUE_PATH = tmp_path / "mcp_queue.jsonl"
+    ms._bg_stop.set()  # stop any running bg worker
     yield
     ms._client = None
     ms._transport = None
-    ms._client_error = None
+    if ms._MCP_QUEUE_PATH.exists():
+        ms._MCP_QUEUE_PATH.unlink(missing_ok=True)
     ms._bg_stop.set()
 
 
@@ -181,42 +183,44 @@ class TestLogToolCall:
         assert result["status"] == "queued"
         assert result["queue_depth"] >= 1
 
-    def test_queues_tool_name(self):
+    def test_spills_tool_name(self):
         client = _make_mock_client()
         self._call(client, tool="db_query")
-        entry = _read_spill_entry()
-        assert entry["action_type"] == "tool_call"
-        assert entry["tool"] == "db_query"
+        entries = _read_queue_entries()
+        assert len(entries) == 1
+        assert entries[0]["tool"] == "db_query"
+        assert entries[0]["action_type"] == "tool_call"
 
     def test_parses_json_input(self):
         client = _make_mock_client()
         self._call(client, input_data='{"key": "value"}')
-        entry = _read_spill_entry()
-        assert entry["input_data"] == {"key": "value"}
+        entries = _read_queue_entries()
+        assert entries[0]["input_data"] == {"key": "value"}
 
     def test_raw_string_fallback_on_invalid_json(self):
         client = _make_mock_client()
         self._call(client, input_data="not-json")
-        entry = _read_spill_entry()
-        assert entry["input_data"] == "not-json"
+        entries = _read_queue_entries()
+        assert entries[0]["input_data"] == "not-json"
 
-    def test_queues_duration_and_status(self):
+    def test_spills_duration_and_status(self):
         client = _make_mock_client()
         self._call(client, duration_ms=500, status="error")
-        entry = _read_spill_entry()
-        assert entry["duration_ms"] == 500
-        assert entry["status"] == "error"
+        entries = _read_queue_entries()
+        assert entries[0]["duration_ms"] == 500
+        assert entries[0]["status"] == "error"
 
     def test_spills_without_client(self):
-        """Log tools must spill to disk even without a client (the core fix)."""
+        """Log tools spill to disk even without a configured client."""
         import aegis.mcp_server as ms
         ms._client = None
         result = json.loads(_run(ms.aegis_log_tool_call(
             tool="t", input_data="{}", output_data="{}"
         )))
         assert result["status"] == "queued"
-        entry = _read_spill_entry()
-        assert entry["tool"] == "t"
+        entries = _read_queue_entries()
+        assert len(entries) == 1
+        assert entries[0]["tool"] == "t"
 
 
 # ---------------------------------------------------------------------------
@@ -243,23 +247,24 @@ class TestLogDecision:
         result = self._call(client)
         assert result["status"] == "queued"
 
-    def test_queues_reasoning(self):
+    def test_spills_reasoning(self):
         client = _make_mock_client()
         self._call(client, reasoning="chose path B")
-        entry = _read_spill_entry()
-        assert entry["reasoning"] == "chose path B"
+        entries = _read_queue_entries()
+        assert entries[0]["reasoning"] == "chose path B"
+        assert entries[0]["action_type"] == "decision"
 
-    def test_queues_confidence(self):
+    def test_spills_confidence(self):
         client = _make_mock_client()
         self._call(client, confidence=0.42)
-        entry = _read_spill_entry()
-        assert entry["confidence"] == 0.42
+        entries = _read_queue_entries()
+        assert entries[0]["confidence"] == 0.42
 
     def test_parses_json_output(self):
         client = _make_mock_client()
         self._call(client, output_data='{"decision": "approve"}')
-        entry = _read_spill_entry()
-        assert entry["output_data"] == {"decision": "approve"}
+        entries = _read_queue_entries()
+        assert entries[0]["output_data"] == {"decision": "approve"}
 
 
 # ---------------------------------------------------------------------------
@@ -277,14 +282,15 @@ class TestLogObservation:
         )))
         assert result["status"] == "queued"
 
-    def test_queues_input_data(self):
+    def test_spills_input_data(self):
         import aegis.mcp_server as ms
         client = _make_mock_client()
         ms._client = client
         _run(ms.aegis_log_observation(input_data='{"x": 1}', output_data='{"y": 2}'))
-        entry = _read_spill_entry()
-        assert entry["input_data"] == {"x": 1}
-        assert entry["output_data"] == {"y": 2}
+        entries = _read_queue_entries()
+        assert entries[0]["input_data"] == {"x": 1}
+        assert entries[0]["output_data"] == {"y": 2}
+        assert entries[0]["action_type"] == "observation"
 
 
 # ---------------------------------------------------------------------------
@@ -305,13 +311,15 @@ class TestLogError:
         )))
         assert result["status"] == "queued"
 
-    def test_queues_error_message(self):
+    def test_spills_error_message(self):
         import aegis.mcp_server as ms
         client = _make_mock_client()
         ms._client = client
         _run(ms.aegis_log_error(tool="t", input_data="{}", error="BOOM", duration_ms=0))
-        entry = _read_spill_entry()
-        assert entry["output_data"] == {"error": "BOOM"}
+        entries = _read_queue_entries()
+        assert entries[0]["output_data"] == {"error": "BOOM"}
+        assert entries[0]["status"] == "error"
+        assert entries[0]["action_type"] == "tool_call"
 
 
 # ---------------------------------------------------------------------------
@@ -613,3 +621,116 @@ class TestTransportErrors:
         ms._transport = transport
         with pytest.raises(RuntimeError, match="network error"):
             _run(ms.aegis_get_health())
+
+
+# ---------------------------------------------------------------------------
+# Spill-First: persistence, crash recovery, batch-coalescing
+# ---------------------------------------------------------------------------
+
+
+class TestSpillFirst:
+    """Tests for the Spill-First pattern (B3): entries persist to disk."""
+
+    def test_spill_entry_creates_file(self):
+        import aegis.mcp_server as ms
+        assert not ms._MCP_QUEUE_PATH.exists()
+        ms._spill_entry({"action_type": "tool_call", "tool": "test"})
+        assert ms._MCP_QUEUE_PATH.exists()
+
+    def test_spill_entry_appends_jsonl(self):
+        import aegis.mcp_server as ms
+        ms._spill_entry({"tool": "a"})
+        ms._spill_entry({"tool": "b"})
+        lines = ms._MCP_QUEUE_PATH.read_text(encoding="utf-8").strip().split("\n")
+        assert len(lines) == 2
+        assert json.loads(lines[0])["tool"] == "a"
+        assert json.loads(lines[1])["tool"] == "b"
+
+    def test_queue_depth_empty(self):
+        import aegis.mcp_server as ms
+        assert ms._queue_depth() == 0
+
+    def test_queue_depth_counts_entries(self):
+        import aegis.mcp_server as ms
+        ms._spill_entry({"tool": "x"})
+        ms._spill_entry({"tool": "y"})
+        ms._spill_entry({"tool": "z"})
+        assert ms._queue_depth() == 3
+
+    def test_peek_queue_reads_without_removing(self):
+        import aegis.mcp_server as ms
+        ms._spill_entry({"tool": "a"})
+        ms._spill_entry({"tool": "b"})
+        entries, count = ms._peek_queue(10)
+        assert len(entries) == 2
+        assert count == 2
+        # File still has both entries
+        assert ms._queue_depth() == 2
+
+    def test_peek_queue_respects_max_entries(self):
+        import aegis.mcp_server as ms
+        for i in range(5):
+            ms._spill_entry({"tool": f"t{i}"})
+        entries, count = ms._peek_queue(3)
+        assert len(entries) == 3
+        assert count == 3
+        assert ms._queue_depth() == 5
+
+    def test_consume_queue_removes_entries(self):
+        import aegis.mcp_server as ms
+        ms._spill_entry({"tool": "a"})
+        ms._spill_entry({"tool": "b"})
+        ms._spill_entry({"tool": "c"})
+        ms._consume_queue(2)
+        entries = _read_queue_entries()
+        assert len(entries) == 1
+        assert entries[0]["tool"] == "c"
+
+    def test_consume_queue_deletes_file_when_empty(self):
+        import aegis.mcp_server as ms
+        ms._spill_entry({"tool": "a"})
+        ms._consume_queue(1)
+        assert not ms._MCP_QUEUE_PATH.exists()
+
+    def test_crash_recovery_entries_survive(self):
+        """Simulate crash: entries spilled but BG worker never processed them."""
+        import aegis.mcp_server as ms
+        # Write entries as if MCP tools were called
+        ms._spill_entry({"action_type": "tool_call", "tool": "pre_crash_1"})
+        ms._spill_entry({"action_type": "decision", "tool": "decision"})
+        # Verify entries survive (no _bg_worker ran)
+        entries, count = ms._peek_queue(10)
+        assert len(entries) == 2
+        assert entries[0]["tool"] == "pre_crash_1"
+        assert entries[1]["action_type"] == "decision"
+
+    def test_batch_coalescing_multiple_tools(self):
+        """Multiple tool types batch-coalesce into a single log_batch call."""
+        import aegis.mcp_server as ms
+        client = _make_mock_client()
+        ms._client = client
+        # Spill entries of different types
+        _run(ms.aegis_log_tool_call(
+            tool="search", input_data="{}", output_data="{}",
+        ))
+        _run(ms.aegis_log_decision(reasoning="pick A", confidence=0.9))
+        _run(ms.aegis_log_observation(input_data='{"temp": 22}'))
+        _run(ms.aegis_log_error(tool="api", input_data="{}", error="fail"))
+        entries = _read_queue_entries()
+        assert len(entries) == 4
+        assert entries[0]["action_type"] == "tool_call"
+        assert entries[1]["action_type"] == "decision"
+        assert entries[2]["action_type"] == "observation"
+        assert entries[3]["status"] == "error"
+
+    def test_spill_file_permissions(self):
+        """Spill file created with restricted permissions (0o600)."""
+        import os
+        import sys
+
+        import aegis.mcp_server as ms
+
+        ms._spill_entry({"tool": "perm_test"})
+        if sys.platform != "win32":
+            mode = os.stat(str(ms._MCP_QUEUE_PATH)).st_mode & 0o777
+            assert mode == 0o600

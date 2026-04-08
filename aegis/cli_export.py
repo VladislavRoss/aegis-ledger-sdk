@@ -1,9 +1,10 @@
 """
-aegis.cli_export -- tail and export commands for the Aegis CLI.
+aegis.cli_export -- tail, export and import commands for the Aegis CLI.
 
 Commands:
     aegis tail <session_id>  Live-poll new entries
     aegis export <session_id> [--format jsonl|json|csv] [--output path]
+    aegis import <file.jsonl> [--batch-size N]  Import JSONL entries
 """
 
 from __future__ import annotations
@@ -244,3 +245,91 @@ def _format_entries(entries: list[dict], fmt: str) -> str:
         }
         writer.writerow(flat)
     return buf.getvalue()
+
+
+def _cmd_import(args: list[str]) -> None:
+    """Import entries from a JSONL file via streaming parser + log_batch."""
+    if not args or args[0] in ("-h", "--help"):
+        print("Usage: aegis import <file.jsonl> [options]")
+        print("  --batch-size N   Entries per batch (default: 50)")
+        sys.exit(0)
+
+    file_path = args[0]
+    batch_size = 50
+
+    i = 1
+    while i < len(args):
+        if args[i] == "--batch-size" and i + 1 < len(args):
+            batch_size = max(1, int(args[i + 1]))
+            i += 2
+        else:
+            i += 1
+
+    from pathlib import Path
+
+    path = Path(file_path)
+    if not path.exists():
+        print(f"Error: File not found: {file_path}", file=sys.stderr)
+        sys.exit(1)
+
+    from aegis.client import AegisClient
+
+    client = AegisClient.from_config()
+
+    total = 0
+    failed = 0
+    batch: list[dict] = []
+
+    with path.open("r", encoding="utf-8") as fh:
+        for line_no, line in enumerate(fh, 1):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError as e:
+                print(f"  [skip] line {line_no}: invalid JSON ({e})", file=sys.stderr)
+                failed += 1
+                continue
+
+            if not isinstance(entry, dict):
+                print(f"  [skip] line {line_no}: not a JSON object", file=sys.stderr)
+                failed += 1
+                continue
+
+            batch.append(_normalize_import_entry(entry))
+
+            if len(batch) >= batch_size:
+                try:
+                    client.log_batch(batch)
+                    total += len(batch)
+                except Exception as e:
+                    print(f"  [error] batch at line {line_no}: {e}", file=sys.stderr)
+                    failed += len(batch)
+                batch = []
+
+    # Flush remaining
+    if batch:
+        try:
+            client.log_batch(batch)
+            total += len(batch)
+        except Exception as e:
+            print(f"  [error] final batch: {e}", file=sys.stderr)
+            failed += len(batch)
+
+    print(f"Imported {total} entries ({failed} failed) from {file_path}")
+
+
+def _normalize_import_entry(raw: dict) -> dict:
+    """Map exported field names to log_batch field names."""
+    # Canister export uses camelCase; log_batch expects snake_case
+    return {
+        "action_type": raw.get("action_type") or raw.get("actionType", "tool_call"),
+        "tool": raw.get("tool", ""),
+        "input_data": raw.get("input_data") or raw.get("inputPreview", ""),
+        "output_data": raw.get("output_data") or raw.get("outputPreview", ""),
+        "duration_ms": int(raw.get("duration_ms") or raw.get("durationMs", 0)),
+        "status": raw.get("status", "success"),
+        "reasoning": raw.get("reasoning") or raw.get("decisionReasoning", ""),
+        "confidence": float(raw.get("confidence") or raw.get("confidenceScore", 0.0)),
+    }

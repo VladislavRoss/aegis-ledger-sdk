@@ -128,7 +128,7 @@ def generate_keypair(path: str | Path) -> tuple[Ed25519PrivateKey, str]:
     return private_key, pub_hex
 
 
-def canonical_json(obj: dict) -> bytes:  # type: ignore[type-arg]
+def canonical_json(obj: dict[str, object]) -> bytes:
     """
     Serialize a dict to canonical JSON bytes.
 

@@ -626,7 +626,7 @@ class AegisClient(CanisterOpsMixin):
         """Manually drain the spill buffer. Returns count of drained entries."""
         return self._transport.drain_spill_buffer()
 
-    def log_batch(self, entries: list[dict[str, Any]]) -> list[str]:
+    def log_batch(self, entries: list[dict[str, JsonValue]]) -> list[str]:
         """Log multiple entries sequentially, returning a list of action_ids."""
         valid_action_types = {e.value for e in ActionType}
         valid_statuses = {e.value for e in ActionStatus}

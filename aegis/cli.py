@@ -88,6 +88,10 @@ def main() -> None:
         from aegis.cli_keys import cmd_register_key
 
         cmd_register_key(args[1:])
+    elif command == "claim-key":
+        from aegis.cli_keys import cmd_claim_key
+
+        cmd_claim_key(args[1:])
     elif command == "revoke":
         from aegis.cli_keys import cmd_revoke
 
@@ -128,6 +132,10 @@ def main() -> None:
         from aegis.cli_export import _cmd_export
 
         _cmd_export(args[1:])
+    elif command == "import":
+        from aegis.cli_export import _cmd_import
+
+        _cmd_import(args[1:])
     elif command == "export-otel":
         _cmd_export_otel(args[1:])
     elif command == "monitor":
@@ -165,6 +173,7 @@ Commands:
   profiles [--active]               List profiles, show active (AEGIS_PROFILE env)
   deploy-check [canister_id]        Post-deploy verification (health+entry+verify)
   register-key <id> --key-file <f>  Register a new API key via Dashboard
+  claim-key <id> --nonce <n> --key-file <f>  Claim API key via Portal nonce (II->CLI)
   rotate-key [--algorithm ALG]      Rotate API key (generate+register+revoke old)
   revoke <key_id>                   Revoke an API key (confirmation required)
   reactivate-key <key_id>           Reactivate a revoked key (owner only)
@@ -175,6 +184,7 @@ Commands:
   org-stats [canister_id]           Aggregated org statistics (entries, agents)
   tail <session_id> [--format json]  Live-tail session entries (poll)
   export <sid> [--format F] [-o P]  Export session (jsonl/json/csv)
+  import <file.jsonl> [--batch-size N]  Import JSONL entries into canister
   export-otel <sid> [--endpoint URL] Export session as OTel spans
   monitor [--interval N] [--once]   Start health monitoring daemon
   mcp-proxy -- <cmd> [args...]      MCP proxy with auto-logging
@@ -485,12 +495,14 @@ def _cmd_status(args: list[str]) -> None:
         if api_ver:
             from aegis import __version__ as sdk_ver
             print(f"  API version:      {api_ver}")
-            sdk_major_minor = ".".join(sdk_ver.split(".")[:2])
-            if sdk_major_minor != api_ver:
-                print(
-                    f"  WARNING: SDK v{sdk_ver} may be incompatible with API v{api_ver}."
-                    " Consider updating: pip install --upgrade aegis-ledger-sdk"
-                )
+            # Only warn if api_ver looks like a semver string (e.g. "0.3")
+            if isinstance(api_ver, str) and "." in api_ver:
+                sdk_major_minor = ".".join(sdk_ver.split(".")[:2])
+                if sdk_major_minor != api_ver:
+                    print(
+                        f"  WARNING: SDK v{sdk_ver} may be incompatible with API v{api_ver}."
+                        " Consider updating: pip install --upgrade aegis-ledger-sdk"
+                    )
 
     except Exception as e:
         print(f"Error: {e}")

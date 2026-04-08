@@ -39,10 +39,11 @@ classifiers = [
 
 dependencies = [
     "cryptography>=42.0",
+    "ic-py>=1.0",
 ]
 
 [project.optional-dependencies]
-icp = ["ic-py>=1.0"]
+icp = []  # ic-py is now a core dependency
 langchain = ["langchain-core>=0.1"]
 crewai = ["crewai>=0.28"]
 openai-agents = ["openai-agents>=0.1"]
@@ -51,7 +52,7 @@ anthropic-agents = ["claude-agent-sdk>=0.1"]
 pdf = ["fpdf2>=2.7.4"]
 pq = ["pqcrypto>=0.4"]
 mcp = ["mcp>=1.20,<2.0"]
-all = ["ic-py>=1.0", "langchain-core>=0.1", "crewai>=0.28", "openai-agents>=0.1", "autogen-agentchat>=0.4", "claude-agent-sdk>=0.1", "cryptography>=42.0", "fpdf2>=2.7.4", "pqcrypto>=0.4", "mcp>=1.20,<2.0"]
+all = ["langchain-core>=0.1", "crewai>=0.28", "openai-agents>=0.1", "autogen-agentchat>=0.4", "claude-agent-sdk>=0.1", "fpdf2>=2.7.4", "pqcrypto>=0.4", "mcp>=1.20,<2.0"]
 dev = [
     "pytest>=8.0",
     "pytest-cov>=5.0",

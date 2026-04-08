@@ -169,13 +169,16 @@ class AegisCallbackHandler(_LCBase):  # type: ignore[misc]
     ) -> None:
         """Called when an LLM errors."""
         elapsed = self._elapsed(run_id)
-        self._client.log_error(
-            tool="llm",
-            input_data={"run_id": str(run_id)},
-            error=error if isinstance(error, Exception) else Exception(str(error)),
-            duration_ms=elapsed,
-            metadata={"langchain_run_id": str(run_id)},
-        )
+        try:
+            self._client.log_error(
+                tool="llm",
+                input_data={"run_id": str(run_id)},
+                error=error if isinstance(error, Exception) else Exception(str(error)),
+                duration_ms=elapsed,
+                metadata={"langchain_run_id": str(run_id)},
+            )
+        except Exception:
+            logger.warning("Failed to log LangChain LLM error", exc_info=True)
 
     # ------------------------------------------------------------------
     # Tool callbacks
@@ -230,13 +233,16 @@ class AegisCallbackHandler(_LCBase):  # type: ignore[misc]
     ) -> None:
         """Called when a tool errors."""
         elapsed = self._elapsed(run_id)
-        self._client.log_error(
-            tool=name,
-            input_data={"run_id": str(run_id)},
-            error=error if isinstance(error, Exception) else Exception(str(error)),
-            duration_ms=elapsed,
-            metadata={"langchain_run_id": str(run_id)},
-        )
+        try:
+            self._client.log_error(
+                tool=name,
+                input_data={"run_id": str(run_id)},
+                error=error if isinstance(error, Exception) else Exception(str(error)),
+                duration_ms=elapsed,
+                metadata={"langchain_run_id": str(run_id)},
+            )
+        except Exception:
+            logger.warning("Failed to log LangChain tool error", exc_info=True)
 
     # ------------------------------------------------------------------
     # Chain callbacks (optional, off by default)
@@ -269,12 +275,15 @@ class AegisCallbackHandler(_LCBase):  # type: ignore[misc]
             return
 
         elapsed = self._elapsed(run_id)
-        self._client.log_observation(
-            input_data={"chain_run_id": str(run_id)},
-            output_data={"output_keys": list(outputs.keys()) if outputs else []},
-            duration_ms=elapsed,
-            metadata={"langchain_run_id": str(run_id)},
-        )
+        try:
+            self._client.log_observation(
+                input_data={"chain_run_id": str(run_id)},
+                output_data={"output_keys": list(outputs.keys()) if outputs else []},
+                duration_ms=elapsed,
+                metadata={"langchain_run_id": str(run_id)},
+            )
+        except Exception:
+            logger.warning("Failed to log LangChain chain end", exc_info=True)
 
     def on_chain_error(
         self,
@@ -286,13 +295,16 @@ class AegisCallbackHandler(_LCBase):  # type: ignore[misc]
     ) -> None:
         """Called when a chain errors."""
         elapsed = self._elapsed(run_id)
-        self._client.log_error(
-            tool="chain",
-            input_data={"run_id": str(run_id)},
-            error=error if isinstance(error, Exception) else Exception(str(error)),
-            duration_ms=elapsed,
-            metadata={"langchain_run_id": str(run_id)},
-        )
+        try:
+            self._client.log_error(
+                tool="chain",
+                input_data={"run_id": str(run_id)},
+                error=error if isinstance(error, Exception) else Exception(str(error)),
+                duration_ms=elapsed,
+                metadata={"langchain_run_id": str(run_id)},
+            )
+        except Exception:
+            logger.warning("Failed to log LangChain chain error", exc_info=True)
 
     # ------------------------------------------------------------------
     # Agent callbacks

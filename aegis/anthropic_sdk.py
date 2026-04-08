@@ -35,7 +35,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from aegis.client import AegisClient
 
-from aegis.types import ActionStatus
+from aegis.types import ActionStatus, JsonValue
 
 logger = logging.getLogger("aegis.anthropic_sdk")
 
@@ -336,10 +336,10 @@ def aegis_hooks(client: AegisClient) -> dict[str, list]:
     tracer = AegisAnthropicTracer(client)
 
     async def _post_tool_use(
-        input_data: dict[str, Any],
+        input_data: dict[str, JsonValue],
         tool_use_id: str | None,
         context: Any,
-    ) -> dict[str, Any]:
+    ) -> dict[str, JsonValue]:
         """PostToolUse hook — logs every tool call to Aegis Ledger."""
         tool_name = input_data.get("tool_name", "unknown")
         tool_input = input_data.get("tool_input", {})
@@ -353,20 +353,20 @@ def aegis_hooks(client: AegisClient) -> dict[str, list]:
         return {}
 
     async def _session_start(
-        input_data: dict[str, Any],
+        input_data: dict[str, JsonValue],
         tool_use_id: str | None,
         context: Any,
-    ) -> dict[str, Any]:
+    ) -> dict[str, JsonValue]:
         """SessionStart hook — logs agent session begin."""
         session_id = input_data.get("session_id", "")
         tracer.on_session_start(session_id=session_id)
         return {}
 
     async def _stop(
-        input_data: dict[str, Any],
+        input_data: dict[str, JsonValue],
         tool_use_id: str | None,
         context: Any,
-    ) -> dict[str, Any]:
+    ) -> dict[str, JsonValue]:
         """Stop hook — logs agent session end."""
         session_id = input_data.get("session_id", "")
         summary = input_data.get("summary", "")
