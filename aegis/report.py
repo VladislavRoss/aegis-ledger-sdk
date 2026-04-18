@@ -29,7 +29,6 @@ from datetime import datetime, timezone
 from typing import Any
 
 from aegis import __version__
-from aegis.report_builders import BUILDERS as _BUILDERS
 
 logger = logging.getLogger("aegis.report")
 
@@ -191,6 +190,11 @@ def _fetch_canister_data(
     total_entries = mapped.get("totalEntries", 0)
     total_keys = mapped.get("totalKeys", 0)
     total_orgs = mapped.get("totalOrgs", 0)
+    deferred = mapped.get("deferredVerifications", 0)
+    if isinstance(deferred, list):
+        deferred = deferred[0] if deferred else 0
+    if not isinstance(deferred, int):
+        deferred = 0
 
     generated_at = _now_iso()
     stats: dict[str, Any] = {
@@ -203,10 +207,15 @@ def _fetch_canister_data(
         "latest_chain_hash": "N/A",
         "coverage_start": generated_at,
         "coverage_end": generated_at,
+        "deferred_verifications": deferred,
     }
+    # M-4 FIX: chain_valid now requires zero deferred signature verifications
+    # in addition to entries existing. True end-to-end integrity still requires
+    # AegisClient.verify_integrity() — this report surfaces the canister's own
+    # deferred-queue signal rather than trivially returning True for any entry.
     health: dict[str, Any] = {
-        "chain_valid": total_entries > 0,
-        "status": "healthy",
+        "chain_valid": total_entries > 0 and deferred == 0,
+        "status": "healthy" if deferred == 0 else "degraded",
         "uptime_seconds": 0,
     }
     return stats, health
@@ -259,7 +268,8 @@ def generate_report(
     generated_at = _now_iso()
     summary = _build_summary(stats, health, generated_at)
 
-    builder = _BUILDERS[format]
+    from aegis.report_builders import BUILDERS
+    builder = BUILDERS[format]
     markdown = builder(canister_id, generated_at, summary, stats, health)
 
     report = ComplianceReport(

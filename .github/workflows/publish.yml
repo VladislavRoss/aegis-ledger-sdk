@@ -1,0 +1,66 @@
+name: Publish to PyPI
+
+# Tag-getriggert: push eines Semver-Tags (z.B. v0.3.5) auf main startet den
+# gesamten Release-Flow — Build -> Release-Gate -> PyPI -> GitHub Release.
+#
+# SECRET REQUIRED: PYPI_API_TOKEN (Repo Settings -> Secrets and variables -> Actions).
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: write  # fuer softprops/action-gh-release
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install build tools
+        run: pip install build twine -q
+
+      - name: Build wheel + sdist
+        run: python -m build
+
+      - name: Release Gate (fresh venv, wheel-based)
+        # Gate 4 (live canister) wird auf CI uebersprungen (kein ~/.aegis/config.toml).
+        # Gates 1, 2, 3, 5 muessen PASSEN bevor PyPI-Upload erfolgt.
+        run: |
+          WHEEL=$(ls dist/*.whl)
+          python scripts/release_gate.py "$WHEEL"
+
+      - name: Publish to PyPI
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
+        run: python -m twine upload dist/*
+
+      - name: Install + smoke test
+        run: |
+          VERSION=${GITHUB_REF_NAME#v}
+          # PyPI index propagation kann 30-60s brauchen
+          for i in 1 2 3 4 5; do
+            if pip install "aegis-ledger-sdk==$VERSION" 2>/dev/null; then break; fi
+            echo "retry $i — waiting for PyPI index"
+            sleep 15
+          done
+          aegis version
+
+      - name: Create GitHub Release with artifacts
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          generate_release_notes: true
+          files: |
+            dist/*.whl
+            dist/*.tar.gz
+          fail_on_unmatched_files: true

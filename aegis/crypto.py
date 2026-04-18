@@ -228,7 +228,19 @@ def truncate_preview(obj: object, max_length: int = 200) -> str:
         "key", "secret", "token", "password", "auth", "credential",
         "ssn", "dob", "birth", "phone", "address", "email",
     )
-    sensitive_str_prefixes = ("Bearer ", "-----BEGIN", "sk-", "eyJ")
+    # L-5 FIX: Extended prefix list covers modern provider tokens
+    # (GitHub, Slack, AWS, Google, Stripe) in addition to the legacy set.
+    sensitive_str_prefixes = (
+        "Bearer ", "-----BEGIN", "sk-", "eyJ",
+        "ghp_", "gho_", "ghu_", "ghs_", "ghr_",  # GitHub PAT/OAuth/refresh
+        "xoxb-", "xoxp-", "xoxa-", "xoxs-",       # Slack tokens
+        "AKIA", "ASIA",                            # AWS access keys
+        "AIza",                                    # Google API keys
+        "pk_live_", "sk_live_", "whsec_",          # Stripe
+    )
+    # Telegram bot token pattern: <digits>:<35 url-safe chars>
+    import re as _re
+    _telegram_re = _re.compile(r"\b\d{6,12}:[A-Za-z0-9_-]{35}\b")
 
     def _redact(d: object) -> object:
         if isinstance(d, dict):
@@ -240,8 +252,11 @@ def truncate_preview(obj: object, max_length: int = 200) -> str:
             }
         if isinstance(d, list):
             return [_redact(item) for item in d]
-        if isinstance(d, str) and any(p in d for p in sensitive_str_prefixes):
-            return "***"
+        if isinstance(d, str):
+            if any(p in d for p in sensitive_str_prefixes):
+                return "***"
+            if _telegram_re.search(d):
+                return "***"
         return d
 
     redacted = _redact(obj)

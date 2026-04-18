@@ -1,0 +1,53 @@
+name: Tests
+
+# Push/PR: Ruff + pytest (non-live) auf Matrix 3.11 / 3.12 / 3.13.
+# Live-Tests (test_e2e_live, test_live_frameworks, test_e2e_mcp_real, etc.)
+# bleiben Off-CI weil sie das Mainnet-Canister + Config brauchen.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'aegis/**'
+      - 'tests/**'
+      - 'pyproject.toml'
+      - '.github/workflows/tests.yml'
+  pull_request:
+    paths:
+      - 'aegis/**'
+      - 'tests/**'
+      - 'pyproject.toml'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ['3.11', '3.12', '3.13']
+      fail-fast: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install package with dev + all extras
+        run: pip install ".[dev,all]" -q
+
+      - name: Ruff check
+        run: ruff check aegis/
+
+      - name: Run tests (non-live only)
+        run: |
+          pytest tests/ \
+            --ignore=tests/test_live_frameworks.py \
+            --ignore=tests/test_e2e_live.py \
+            --ignore=tests/test_e2e_smoke.py \
+            --ignore=tests/test_e2e_mcp_real.py \
+            --ignore=tests/test_e2e_frameworks_real.py \
+            --ignore=tests/test_e2e_gdpr.py \
+            --ignore=tests/test_cli.py \
+            --ignore=tests/test_mcp_server.py \
+            --tb=short -q

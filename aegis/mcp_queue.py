@@ -48,15 +48,26 @@ def adopt_orphan_queues() -> None:
     my_pid = str(os.getpid())
 
     # 1. Adopt orphan MCP queues from dead processes
+    # LOW-6 FIX: PID-reuse safeguard — OS recycles PIDs (esp. on Windows).
+    # Treat queue as orphaned if EITHER the PID is dead OR the file's mtime
+    # is older than 1h (stale regardless of PID reuse).
+    import time as _t
+    stale_cutoff = _t.time() - 3600
     for qfile in _AEGIS_DIR.glob("mcp_queue_*.jsonl"):
         pid_str = qfile.stem.replace("mcp_queue_", "")
         if pid_str == my_pid:
             continue
         try:
-            os.kill(int(pid_str), 0)
+            mtime = qfile.stat().st_mtime
+        except OSError:
             continue
+        is_stale = mtime < stale_cutoff
+        try:
+            os.kill(int(pid_str), 0)
+            if not is_stale:
+                continue  # process alive + file fresh → skip
         except (OSError, ValueError):
-            pass
+            pass  # process dead → adopt
         _adopt_file(qfile, remove=True)
 
     # 2. Drain hook_queue.jsonl (lightweight hook entries → our queue)
@@ -65,26 +76,41 @@ def adopt_orphan_queues() -> None:
 
 
 def _adopt_file(qfile: Path, *, remove: bool = True) -> None:
-    """Move entries from *qfile* into our MCP queue, optionally removing it."""
+    """Move entries from *qfile* into our MCP queue, optionally removing it.
+
+    MED-1 FIX: Atomic rename snapshot BEFORE read — prevents data loss from
+    concurrent writers (e.g. claude-code hooks appending to hook_queue.jsonl)
+    between read_text() and unlink(). After rename, new writers create a
+    fresh qfile while we safely consume the snapshot.
+    """
+    if remove:
+        # Atomic snapshot: rename to PID-scoped adopt file so concurrent
+        # writers hitting the original path create a new file we won't touch.
+        src = qfile.with_suffix(f".adopt_{os.getpid()}")
+        try:
+            qfile.rename(src)
+        except (OSError, FileNotFoundError):
+            return
+    else:
+        src = qfile
     try:
-        content = qfile.read_text(encoding="utf-8").strip()
-    except OSError:
-        return
-    if not content:
+        try:
+            content = src.read_text(encoding="utf-8").strip()
+        except OSError:
+            return
+        if not content:
+            return
+        fd = os.open(str(_MCP_QUEUE_PATH), os.O_CREAT | os.O_WRONLY | os.O_APPEND, 0o600)
+        try:
+            os.write(fd, (content + "\n").encode("utf-8"))
+        finally:
+            os.close(fd)
+        n = content.count("\n") + 1
+        logger.info("Adopted %d entries from %s", n, qfile.name)
+    finally:
         if remove:
             with contextlib.suppress(OSError):
-                qfile.unlink()
-        return
-    fd = os.open(str(_MCP_QUEUE_PATH), os.O_CREAT | os.O_WRONLY | os.O_APPEND, 0o600)
-    try:
-        os.write(fd, (content + "\n").encode("utf-8"))
-    finally:
-        os.close(fd)
-    n = content.count("\n") + 1
-    logger.info("Adopted %d entries from %s", n, qfile.name)
-    if remove:
-        with contextlib.suppress(OSError):
-            qfile.unlink()
+                src.unlink()
 
 
 def spill_entry(entry: dict[str, Any]) -> None:

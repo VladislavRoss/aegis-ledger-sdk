@@ -172,7 +172,8 @@ def _init_client() -> Any:
     # Unique session_id per MCP process — allows parallel agents without
     # sequence-number conflicts on the canister.  agent_id stays shared.
     agent_id = cfg["agent_id"]
-    session_id = f"{agent_id}-{uuid.uuid4().hex[:8]}"
+    # M-4 FIX: 64-bit entropy (birthday-collision @ ~4B vs 65K @ 32-bit)
+    session_id = f"{agent_id}-{uuid.uuid4().hex[:16]}"
     kwargs: dict[str, Any] = {
         "canister_id": cfg["canister_id"],
         "api_key_id": cfg["api_key_id"],

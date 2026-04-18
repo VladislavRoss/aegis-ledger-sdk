@@ -72,7 +72,7 @@ print("[0/6] Creating fresh venv...")
 subprocess.run([sys.executable, "-m", "venv", str(VENV_DIR)],
                check=True, capture_output=True)
 subprocess.run([PYTHON, "-m", "pip", "install", "-q",
-                f"{WHEEL}[mcp,icp,pq]"],
+                f"{WHEEL}[mcp,icp,pq,all]"],
                check=True, capture_output=True)
 print(f"  OK   Installed in {VENV_DIR}\n")
 

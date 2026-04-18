@@ -81,7 +81,8 @@ class AegisClient(TraceMixin, CanisterOpsMixin):
         self._api_key_id = api_key_id
         self._agent_id = agent_id
         self._org_id = org_id
-        self._session_id = session_id or agent_id or f"agent_{uuid.uuid4().hex[:8]}"
+        # M-4 FIX: 64-bit entropy (birthday-collision @ ~4B vs 65K @ 32-bit)
+        self._session_id = session_id or agent_id or f"agent_{uuid.uuid4().hex[:16]}"
         self._sequence: int = 0
         # RLock: reentrant — _sync_sequence_from_canister() is called within _log()'s lock
         self._lock = threading.RLock()
@@ -414,7 +415,8 @@ class AegisClient(TraceMixin, CanisterOpsMixin):
         with self._lock:
             old_session_id = self._session_id
             prefix = self._agent_id or "agent"
-            self._session_id = session_id or f"{prefix}_{uuid.uuid4().hex[:8]}"
+            # M-4 FIX: 64-bit entropy (birthday-collision @ ~4B vs 65K @ 32-bit)
+            self._session_id = session_id or f"{prefix}_{uuid.uuid4().hex[:16]}"
             self._sequence = 0
             self._action_stack.clear()
             # Clean up chain state from the OLD session
@@ -647,7 +649,7 @@ class AegisClient(TraceMixin, CanisterOpsMixin):
                 action_id = (
                     result.get("actionId")
                     or result.get("_3776271665")
-                    or f"local_{uuid.uuid4().hex[:8]}"
+                    or f"local_{uuid.uuid4().hex[:16]}"  # M-4: 64-bit entropy
                 )
 
                 self._chain_heads[entry.session_id] = chain_hash
@@ -666,7 +668,36 @@ class AegisClient(TraceMixin, CanisterOpsMixin):
                 # Auto-recovery: re-sync sequence on conflict and retry once
                 if "Sequence number must be strictly increasing" in str(e):
                     self._sync_sequence_from_canister()
-                    entry.sequence_number = self._sequence
+                    # M-3 FIX: Rebuild entry + signature + chain from synced state.
+                    # Previously only entry.sequence_number was overwritten while
+                    # payload_bytes/payload_signature/chain_hash remained bound to
+                    # the OLD sequence → stored record had seq=N+X but signed
+                    # payload said seq=N (audit integrity mismatch).
+                    entry = prepare_entry(
+                        agent_id=self._agent_id,
+                        session_id=self._session_id,
+                        sequence_number=self._sequence,
+                        action_type=action_type,
+                        tool=tool,
+                        input_data=input_data,
+                        output_data=output_data,
+                        duration_ms=duration_ms,
+                        status=status,
+                        reasoning=reasoning,
+                        confidence=confidence,
+                        merged_metadata=merged_metadata,
+                        now_ms=now_ms,
+                        parent_id=parent_id,
+                        environment=self._environment,
+                        sdk_version=__version__,
+                        api_key_id=self._api_key_id,
+                        parent_session_id=self._parent_session_id,
+                    )
+                    signable = entry.to_signable_dict()
+                    payload_bytes = canonical_json(signable)
+                    entry.payload_signature = self._scheme.sign(payload_bytes)
+                    previous_chain_hash = self._chain_heads.get(entry.session_id, "")
+                    chain_hash = compute_chain_hash(previous_chain_hash, payload_bytes)
                     candid_args = build_candid_args(
                         entry=entry,
                         chain_hash=chain_hash,
@@ -696,7 +727,7 @@ class AegisClient(TraceMixin, CanisterOpsMixin):
                     translated = translate_error(str(e))  # C-3: key_id stripped
                     logger.warning("Failed to log action (fail_open=True): %s", translated)
                     self._spilled_calls += 1
-                    return f"spilled_{uuid.uuid4().hex[:8]}"
+                    return f"spilled_{uuid.uuid4().hex[:16]}"  # M-4: 64-bit entropy
                 raise
 
         # H-2 FIX: Drain spill buffer OUTSIDE the lock
