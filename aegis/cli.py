@@ -239,8 +239,9 @@ def _cmd_test(args: list[str]) -> None:
         print()
 
         print("  Verifying on-chain...")
-        from aegis.transport import CanisterTransport, TransportConfig
         from ic.candid import Types  # type: ignore[import-untyped]
+
+        from aegis.transport import CanisterTransport, TransportConfig
 
         config = TransportConfig(
             canister_id=client._canister_id,
@@ -408,8 +409,9 @@ def _cmd_verify_chain(args: list[str]) -> None:
         canister_id_arg, session_id = None, args[0]
 
     try:
-        from aegis.verify import verify_chain
         from ic.candid import Types  # type: ignore[import-untyped]
+
+        from aegis.verify import verify_chain
 
         transport, canister_id = _transport_from_config(canister_id_arg)
         result = transport.call_query(
