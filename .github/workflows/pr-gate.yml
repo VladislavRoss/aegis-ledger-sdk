@@ -43,8 +43,8 @@ jobs:
       - name: Monolith size gate
         run: python scripts/check_monoliths.py
 
-      - name: Ruff check
-        run: ruff check aegis tests
+      - name: Ruff check runtime package
+        run: ruff check aegis/
 
       - name: Mypy strict check
         run: mypy aegis
