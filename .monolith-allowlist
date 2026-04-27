@@ -1,0 +1,4 @@
+# Existing files above the initial reviewability threshold.
+# These are grandfathered for governance rollout only; shrink them in later refactor PRs.
+aegis/cli.py
+tests/test_e2e_workflows.py
