@@ -1,0 +1,31 @@
+name: Author Guard
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  block-unauthorized-authors:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Block unauthorized author or committer identities
+        shell: bash
+        run: |
+          set -euo pipefail
+          RANGE="HEAD"
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            git fetch origin "${{ github.base_ref }}" --depth=200
+            RANGE="origin/${{ github.base_ref }}..HEAD"
+          fi
+
+          blocked=$(git log "$RANGE" --format='%H %an <%ae> %cn <%ce>' | grep -iE 'claude|anthropic|chatgpt|openai' || true)
+          if [ -n "$blocked" ]; then
+            echo "Blocked unauthorized author or committer identity:"
+            echo "$blocked"
+            exit 1
+          fi
