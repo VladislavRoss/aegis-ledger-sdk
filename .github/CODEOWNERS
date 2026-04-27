@@ -1,0 +1,11 @@
+# Repository ownership rules
+# Every change requires owner review before merging.
+
+* @VladislavRoss
+
+.github/** @VladislavRoss
+pyproject.toml @VladislavRoss
+README.md @VladislavRoss
+scripts/** @VladislavRoss
+aegis/** @VladislavRoss
+tests/** @VladislavRoss

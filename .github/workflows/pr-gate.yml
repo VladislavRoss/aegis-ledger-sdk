@@ -1,0 +1,62 @@
+name: PR Gate
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  pr-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install package with dev + all extras
+        run: |
+          python -m pip install -U pip
+          pip install ".[dev,all]"
+          pip install build
+
+      - name: Author guard
+        shell: bash
+        run: |
+          set -euo pipefail
+          RANGE="HEAD"
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            git fetch origin "${{ github.base_ref }}" --depth=200
+            RANGE="origin/${{ github.base_ref }}..HEAD"
+          fi
+          blocked=$(git log "$RANGE" --format='%H %an <%ae> %cn <%ce>' | grep -iE 'claude|anthropic|chatgpt|openai' || true)
+          if [ -n "$blocked" ]; then
+            echo "Blocked unauthorized author or committer identity:"
+            echo "$blocked"
+            exit 1
+          fi
+
+      - name: Monolith size gate
+        run: python scripts/check_monoliths.py
+
+      - name: Ruff check runtime package
+        run: ruff check aegis/
+
+      - name: Mypy baseline report
+        continue-on-error: true
+        run: mypy aegis
+
+      - name: Unit tests without network
+        run: pytest -m "not network" --tb=short -q
+
+      - name: Build wheel and sdist
+        run: python -m build
+
+      - name: Fresh wheel release gate
+        run: |
+          WHEEL=$(ls dist/*.whl | head -1)
+          python scripts/release_gate.py "$WHEEL"
