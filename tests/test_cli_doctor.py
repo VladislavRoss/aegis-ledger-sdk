@@ -15,7 +15,7 @@ def _run_cli(*args: str, timeout: int = 15) -> subprocess.CompletedProcess[str]:
     """Helper to invoke the Aegis CLI with given arguments."""
     env = {**__import__("os").environ, "PYTHONUTF8": "1"}
     return subprocess.run(
-        [sys.executable, "-m", "AEGIS_LEDGER.cli", *args],
+        [sys.executable, "-m", "aegis.cli", *args],
         capture_output=True, text=True, timeout=timeout, env=env,
     )
 
@@ -338,7 +338,7 @@ class TestInitQuickstart:
     def test_quickstart_no_input_required(self, tmp_path: Path):
         """--quickstart must not call input() — runs with /dev/null stdin."""
         result = subprocess.run(
-            [sys.executable, "-m", "AEGIS_LEDGER.cli", "init", "--quickstart"],
+            [sys.executable, "-m", "aegis.cli", "init", "--quickstart"],
             capture_output=True, text=True, timeout=30,
             env={
                 **__import__("os").environ,
@@ -354,7 +354,7 @@ class TestInitQuickstart:
     def test_quickstart_writes_config(self, tmp_path: Path):
         """--quickstart must write config.toml."""
         subprocess.run(
-            [sys.executable, "-m", "AEGIS_LEDGER.cli", "init", "--quickstart"],
+            [sys.executable, "-m", "aegis.cli", "init", "--quickstart"],
             capture_output=True, text=True, timeout=30,
             env={
                 **__import__("os").environ,

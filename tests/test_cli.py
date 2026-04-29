@@ -8,7 +8,7 @@ def _run_cli(*args: str, timeout: int = 10) -> subprocess.CompletedProcess[str]:
     """Helper to invoke the Aegis CLI with given arguments."""
     env = {**__import__("os").environ, "PYTHONUTF8": "1"}
     return subprocess.run(
-        [sys.executable, "-m", "AEGIS_LEDGER.cli", *args],
+        [sys.executable, "-m", "aegis.cli", *args],
         capture_output=True, text=True, timeout=timeout, env=env,
     )
 
@@ -244,7 +244,7 @@ class TestCliInit:
                "AEGIS_SKIP_UPDATE_CHECK": "1"}
         # Headless flow: agent_name -> config_location (no principal prompt)
         result = subprocess.run(
-            [sys.executable, "-m", "AEGIS_LEDGER.cli", "init", "--algorithm", "ed25519"],
+            [sys.executable, "-m", "aegis.cli", "init", "--algorithm", "ed25519"],
             input="ak_test_key\n\n",
             capture_output=True, text=True, timeout=30, env=env,
         )
@@ -264,7 +264,7 @@ class TestCliInit:
                "AEGIS_SKIP_UPDATE_CHECK": "1"}
         # Headless flow: agent_name(empty=auto) -> config_location
         result = subprocess.run(
-            [sys.executable, "-m", "AEGIS_LEDGER.cli", "init", "--algorithm", "ed25519"],
+            [sys.executable, "-m", "aegis.cli", "init", "--algorithm", "ed25519"],
             input="\n\n",
             capture_output=True, text=True, timeout=30, env=env,
         )
@@ -282,7 +282,7 @@ class TestCliInit:
                "AEGIS_SKIP_UPDATE_CHECK": "1"}
         # Headless flow: agent_name -> algo=1 -> config_location
         result = subprocess.run(
-            [sys.executable, "-m", "AEGIS_LEDGER.cli", "init"],
+            [sys.executable, "-m", "aegis.cli", "init"],
             input="ak_algo_test\n1\n\n",
             capture_output=True, text=True, timeout=30, env=env,
         )
@@ -296,7 +296,7 @@ class TestCliInit:
         env = {**os.environ, "PYTHONUTF8": "1", "AEGIS_CONFIG_DIR": str(cfg_dir),
                "AEGIS_SKIP_UPDATE_CHECK": "1"}
         result = subprocess.run(
-            [sys.executable, "-m", "AEGIS_LEDGER.cli", "init", "--algorithm", "ed25519"],
+            [sys.executable, "-m", "aegis.cli", "init", "--algorithm", "ed25519"],
             input="\n\n",
             capture_output=True, text=True, timeout=30, env=env,
         )
@@ -312,7 +312,7 @@ class TestCliInit:
                "AEGIS_SKIP_UPDATE_CHECK": "1"}
         # Headless flow: name -> algo(default=ml-dsa-65) -> config
         result = subprocess.run(
-            [sys.executable, "-m", "AEGIS_LEDGER.cli", "init"],
+            [sys.executable, "-m", "aegis.cli", "init"],
             input="\n\n\n",
             capture_output=True, text=True, timeout=30, env=env,
         )

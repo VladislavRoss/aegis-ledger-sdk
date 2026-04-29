@@ -27,7 +27,7 @@ class TestTranslateError:
         err = translate_error("Key revoked for org xyz", key_id="ak_old")
         assert isinstance(err, AegisAuthError)
         assert "ak_old" in str(err)
-        assert "Dashboard" in str(err)
+        assert "aegis keys create" in str(err)
 
     def test_rate_limited(self):
         err = translate_error("Rate limited: too many calls")

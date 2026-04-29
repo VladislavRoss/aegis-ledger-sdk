@@ -484,7 +484,7 @@ class TestGenerateAllReports:
 class TestCliReport:
     def test_report_no_args_uses_config(self) -> None:
         result = subprocess.run(
-            [sys.executable, "-m", "AEGIS_LEDGER.cli", "report"],
+            [sys.executable, "-m", "aegis.cli", "report"],
             capture_output=True,
             text=True,
             timeout=15,
@@ -497,7 +497,7 @@ class TestCliReport:
 
     def test_report_unknown_format_exits_1(self) -> None:
         result = subprocess.run(
-            [sys.executable, "-m", "AEGIS_LEDGER.cli", "report", CANISTER_ID,
+            [sys.executable, "-m", "aegis.cli", "report", CANISTER_ID,
              "--format", "invalid-format"],
             capture_output=True,
             text=True,
@@ -508,7 +508,7 @@ class TestCliReport:
 
     def test_help_includes_report(self) -> None:
         result = subprocess.run(
-            [sys.executable, "-m", "AEGIS_LEDGER.cli", "--help"],
+            [sys.executable, "-m", "aegis.cli", "--help"],
             capture_output=True,
             text=True,
             timeout=10,
