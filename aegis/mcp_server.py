@@ -27,8 +27,6 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from mcp.server.fastmcp import FastMCP
-
 from aegis.integrity import (
     HEALTH_HASH_MAP as _HEALTH_HASH_MAP,
 )
@@ -43,6 +41,7 @@ from aegis.mcp_queue import (
     queue_depth,
     spill_entry,
 )
+from mcp.server.fastmcp import FastMCP
 
 logger = logging.getLogger("aegis.mcp")
 

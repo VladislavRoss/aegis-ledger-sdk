@@ -129,9 +129,8 @@ def migrate_session(
     Returns:
         Migration report dict.
     """
-    from ic.candid import Types  # type: ignore[import-untyped]
-
     from aegis.transport import CanisterTransport, TransportConfig
+    from ic.candid import Types  # type: ignore[import-untyped]
 
     scheme = _build_scheme(target_algorithm, pem_path, signing_key_path)
 

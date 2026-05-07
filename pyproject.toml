@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "aegis-ledger-sdk"
-version = "0.3.5"
+version = "0.4.0"
 description = "Tamper-evident execution ledger for AI agents. Log every tool call, decision, and error to a cryptographically verifiable audit trail."
 readme = "README.md"
 license = "MIT"
@@ -52,7 +52,8 @@ anthropic-agents = ["claude-agent-sdk>=0.1"]
 pdf = ["fpdf2>=2.7.4"]
 pq = ["pqcrypto>=0.4"]
 mcp = ["mcp>=1.20,<2.0"]
-all = ["langchain-core>=0.1", "crewai>=0.28", "openai-agents>=0.1", "autogen-agentchat>=0.4", "claude-agent-sdk>=0.1", "fpdf2>=2.7.4", "pqcrypto>=0.4", "mcp>=1.20,<2.0"]
+ultimum = ["cbor2>=5.4"]
+all = ["langchain-core>=0.1", "crewai>=0.28", "openai-agents>=0.1", "autogen-agentchat>=0.4", "claude-agent-sdk>=0.1", "fpdf2>=2.7.4", "pqcrypto>=0.4", "mcp>=1.20,<2.0", "cbor2>=5.4"]
 dev = [
     "pytest>=8.0",
     "pytest-cov>=5.0",
