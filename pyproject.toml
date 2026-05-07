@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "aegis-ledger-sdk"
-version = "0.4.0"
+version = "0.4.1"
 description = "Tamper-evident execution ledger for AI agents. Log every tool call, decision, and error to a cryptographically verifiable audit trail."
 readme = "README.md"
 license = "MIT"
@@ -26,7 +26,6 @@ keywords = [
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
@@ -78,6 +77,9 @@ line-length = 100
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "UP", "B", "SIM", "TCH"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["aegis"]
 
 [tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["N999"]

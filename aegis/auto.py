@@ -64,8 +64,9 @@ def _install_langchain(client: AegisClient) -> bool:
     Returns True on success, False if the required API is missing.
     """
     try:
-        from aegis.langchain import AegisCallbackHandler
         from langchain_core.callbacks import set_handler  # type: ignore[import-untyped]
+
+        from aegis.langchain import AegisCallbackHandler
 
         handler = AegisCallbackHandler(client)
         set_handler(handler)
